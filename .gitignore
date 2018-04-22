@@ -1,0 +1,22 @@
+CMakeCache.txt
+CMakeFiles
+CMakeScripts
+Makefile
+cmake_install.cmake
+install_manifest.txt
+compile_commands.json
+CTestTestfile.cmake
+
+## intermediate files
+.idea/
+cmake-build-debug/
+cmake-build-release/
+
+# other sources
+Eigen/
+
+
+## build files
+build/
+*.o
+*.a
