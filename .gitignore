@@ -12,11 +12,12 @@ CTestTestfile.cmake
 cmake-build-debug/
 cmake-build-release/
 
-# other sources
-Eigen/
-
 
 ## build files
 build/
 *.o
 *.a
+*.depend
+*.sources
+*.mat
+*.pdf
