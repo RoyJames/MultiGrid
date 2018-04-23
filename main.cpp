@@ -25,7 +25,12 @@ typedef Eigen::SparseMatrix<double> SpMat; // declares a column-major sparse mat
 typedef Eigen::Triplet<double> T;
 
 
-DTMutableDoubleArray getSparseSol(const DTMesh2D& f, const DTFunction2D& g)
+double boundary_func(double x, double y)
+{
+    return 3*x+5*y;
+}
+
+DTMutableDoubleArray getSparseSol(const DTMesh2D& f, double g(double, double))
 {
     DTMesh2DGrid grid = f.Grid();
     double h = grid.dx();
@@ -122,11 +127,16 @@ void printMatrix(const DTDoubleArray &p)
     printf("\n");
 }
 
-double calcError(const DTMutableDoubleArray ref, const DTMutableDoubleArray tar)
+double calcError(const DTDoubleArray ref, const DTDoubleArray tar)
 {
     DTMutableDoubleArray diff = ref - tar;
     double absmax = std::max(Maximum(diff), - Minimum(diff));
     return absmax;
+}
+
+double calcNorm(const DTDoubleArray ref)
+{
+    return std::max(Maximum(ref), - Minimum(ref));
 }
 
 
@@ -137,33 +147,133 @@ typedef struct grid
 }gridtype;
 
 
-void direct_sovle(gridtype &p)
+void direct_solve(gridtype &p)
 {
+    auto u = p.v.DoubleData();
+    auto fData = p.f.DoubleData();
+    int N = p.v.n();
+    int M = p.v.m();
+    assert(M == N);
+    assert(M % 2 == 1);
+    double h2 = p.v.Grid().dx() * p.v.Grid().dx();
 
+    if(M == 3)
+    {
+        u(1, 1) = (u(0,1)+u(2,1)+u(1,0)+u(1,2)+fData(1,1)*h2)*0.25;
+    }
 };
 
-void relax(gridtype &p, int Niter, double omega)  // sweep
+void relax(gridtype &p, int Niter, double omega)  // Gauss-Seidel
 {
-
+    auto u = p.v.DoubleData();
+    auto fData = p.f.DoubleData();
+    int N = p.v.n();
+    int M = p.v.m();
+    assert(M == N);
+    assert(M % 2 == 1);
+    double nomega = 1 - omega;
+    double h2 = p.v.Grid().dx() * p.v.Grid().dx();
+    for(int iter = 0; iter < Niter; iter++)
+    {
+        for(int j = 1; j < N-1; j++){
+            if (j % 2 == 0){
+                for(int i = 1; i < M-1; i+=2){
+                    u(i, j) = u(i, j) * nomega + ((u(i-1,j)+u(i+1,j)+u(i,j-1)+u(i,j+1)+fData(i,j)*h2) * 0.25) * omega;
+                }
+            }else{
+                for(int i = 2; i < M-1; i+=2){
+                    u(i, j) = u(i, j) * nomega + ((u(i-1,j)+u(i+1,j)+u(i,j-1)+u(i,j+1)+fData(i,j)*h2) * 0.25) * omega;
+                }
+            }
+        }
+        // update black
+        for(int j = 1; j < N-1; j++){
+            if (j % 2 == 0){
+                for(int i = 2; i < M-1; i+=2){
+                    u(i, j) = u(i, j) * nomega + ((u(i-1,j)+u(i+1,j)+u(i,j-1)+u(i,j+1)+fData(i,j)*h2) * 0.25) * omega;
+                }
+            }else{
+                for(int i = 1; i < M-1; i+=2){
+                    u(i, j) = u(i, j) * nomega + ((u(i-1,j)+u(i+1,j)+u(i,j-1)+u(i,j+1)+fData(i,j)*h2) * 0.25) * omega;
+                }
+            }
+        }
+    }
 }
 
 void coarsen(const DTDoubleArray &fine, DTMutableDoubleArray &coarse) // restrict
 {
+    int M = coarse.m();
+    int N = coarse.n();
+    assert(M == N);
+    assert(M % 2 == 1);
 
+    double selfw = 1.0 / 4;
+    double neighborw = 1.0 / 8;
+    double cornerw = 1.0 / 16;
+    for(int i = 1; i < M-1; i++)
+    {
+        for(int j = 1; j < N-1; j++)
+        {
+            coarse(i, j) = fine(i, j) * selfw +
+                    (fine(i-1, j) + fine(i+1, j) + fine(i, j-1) + fine(i, j+1)) * neighborw +
+                    (fine(i-1, j-1) + fine(i+1, j-1) + fine(i+1, j-1) + fine(i+1, j+1)) * cornerw;
+        }
+    }
 }
 
 void refine(const DTDoubleArray &coarse, DTMutableDoubleArray &fine)  // interpolate
 {
-
+    int M = fine.m();
+    int N = fine.n();
+    assert(M == N);
+    assert(M % 2 == 1);
+    for(int i = 1; i < M-1; i++)
+    {
+        for(int j = 1; j < N-1; j++)
+        {
+            if( i % 2 == 1 && j % 2 == 1)
+            {
+                fine(i,j) = coarse((i+1)/2, (j+1)/2);
+            } else if (i % 2 == 1 && j % 2 == 0)
+            {
+                fine(i,j) = 0.5 * ( coarse((i+1)/2, j/2) + coarse((i+1)/2, j/2+1) );
+            } else if (i % 2 == 0 && j % 2 == 1)
+            {
+                fine(i,j) = 0.5 * ( coarse(i/2, (j+1)/2) + coarse(i/2+1, (j+1)/2) );
+            } else if (i % 2 == 0 && j % 2 == 0)
+            {
+                fine(i,j) = 0.25 * ( coarse(i/2, j/2) + coarse(i/2+1, j/2) + coarse(i/2, j/2+1) + coarse(i/2+1, j/2+1) );
+            }
+        }
+    }
 }
 
-DTMutableDoubleArray residual(gridtype &p)
+DTMutableDoubleArray residual(const gridtype &p)
 {
-    return DTMutableDoubleArray(1, 1);
+    auto u = p.v.DoubleData();
+    auto fData = p.f.DoubleData();
+    int N = p.v.n();
+    int M = p.v.m();
+    assert(M == N);
+    assert(M % 2 == 1);
+    double h2 = p.v.Grid().dx() * p.v.Grid().dx();
+
+
+    auto res = DTMutableDoubleArray(M, N);
+    res = 0;
+    for(int i = 1; i < M-1; i++)
+    {
+        for(int j = 1; j < N-1; j++)
+        {
+            res(i, j) = fData(i, j)*h2 - (u(i, j)*4.0 - u(i-1, j) - u(i+1, j) - u(i, j-1) - u(i, j+1));
+        }
+    }
+    return res;
 }
 
 
-void MultiGrid(gridtype &prob, int Nv, int Ndown, int Nup, double omega, int coarsest)
+void MultiGrid(gridtype &prob, int Nv, int Ndown, int Nup, double omega, int coarsest, const DTDoubleArray *ref = NULL)
 {
     // Initialization
     int depth = int(log2(1.0f * (prob.f.DoubleData().m() - 1) / coarsest) + 0.5f);
@@ -176,6 +286,7 @@ void MultiGrid(gridtype &prob, int Nv, int Ndown, int Nup, double omega, int coa
         int newdim = (Grids[d-1].f.DoubleData().m() - 1) / 2 + 1;
         auto prevGrid = Grids[d-1].f.Grid();
         DTMutableDoubleArray dData(newdim, newdim);
+        dData = 0;
         DTMesh2DGrid grid = DTMesh2DGrid(prevGrid.Origin(), prevGrid.dx() * 2.0, prevGrid.dy() * 2.0, dData.m(),dData.n());
         Grids[d].f = DTMutableMesh2D(grid, dData.Copy());
         Grids[d].v = DTMutableMesh2D(grid, dData.Copy());
@@ -184,6 +295,8 @@ void MultiGrid(gridtype &prob, int Nv, int Ndown, int Nup, double omega, int coa
     // Do Nv V cycles
     for(int iter = 0; iter < Nv; iter++)
     {
+//        auto before = calcNorm(residual(Grids[0]));
+        auto before = calcError(*ref, Grids[0].v.DoubleData());
         // Sweep down
         for(int iDown = 0; iDown < depth; iDown++)
         {
@@ -194,20 +307,24 @@ void MultiGrid(gridtype &prob, int Nv, int Ndown, int Nup, double omega, int coa
         }
 
         // Apply direct solver to the coarsest grid
-        direct_sovle(Grids[depth]);
+        direct_solve(Grids[depth]);
+        auto lowest = calcNorm(residual(Grids[depth]));
 
         // Sweep up
         for(int iUp = depth-1; iUp >= 0; iUp--)
         {
             auto prev = Grids[iUp + 1].v.DoubleData();
             auto cur = Grids[iUp].v.DoubleData();
-            auto refined = prev.Copy();
+            auto refined = DTMutableDoubleArray(cur.m(), cur.n());
             refine(prev, refined);
             cur += refined;
             relax(Grids[iUp], Nup, omega);  // Jacobi iterations after refinement
+            prev = 0;   // clear previous solution
         }
+//        auto after = calcNorm(residual(Grids[0]));
+        auto after = calcError(*ref, Grids[0].v.DoubleData());
+        printf("iteration %d: before=%.4f\tafter=%.4f\n", iter+1, before, after);
     }
-
     delete[] Grids;
 }
 
@@ -221,8 +338,8 @@ int main(int argc,const char *argv[])
             ( "Nv,v", po::value< int >()->default_value( 100 ), "number of V cycles to sweep")
             ( "Nbefore,b", po::value< int >()->default_value( 3 ), "number of Jacobi sweeps before refinement" )
             ( "Nafter,a", po::value< int >()->default_value( 3 ), "number of Jacobi sweeps after refinement" )
-            ( "omega,o", po::value< float >()->default_value( 1.5 ), "relaxation parameter" )
-            ( "coarsest,c", po::value< int >()->default_value( 8 ), "threshold dimension to use a direct solver" );
+            ( "omega,o", po::value< float >()->default_value( 1.8 ), "relaxation parameter" )
+            ( "coarsest,c", po::value< int >()->default_value( 2 ), "threshold dimension to use a direct solver" );
 
 
     po::positional_options_description _p;
@@ -249,15 +366,12 @@ int main(int argc,const char *argv[])
     // Read in the input variables.
     DTMesh2D f;
     Read(inputFile, "f", f);
-    DTFunction2D g;
-    Read(inputFile, "g", g);
 
-    DTMutableDoubleArray groundtruth = getSparseSol(f, g);
+    DTMutableDoubleArray groundtruth = getSparseSol(f, boundary_func);
 
     DTMesh2DGrid grid = f.Grid();
 //    DTMatlabDataFile outputFile("Output.mat",DTFile::NewReadWrite);
 //    DTSeriesMesh2D computed(outputFile,"Var");
-
 
     double h = grid.dx();
     double h2 = h * h;
@@ -288,21 +402,28 @@ int main(int argc,const char *argv[])
     // fill boundary rows
     for (int j = 0; j < N; j++) {
         double y = yzero + j*h;
-        u(0,j) = g(0, y);
-        u(M-1,j) = g(xm, y);
+        u(0,j) = boundary_func(0, y);
+        u(M-1,j) = boundary_func(xm, y);
     }
     // fill boundary columns
     for (int i = 0; i < M; i++) {
         double x = xzero + i*h;
-        u(i,0) = g(x, 0);
-        u(i,N-1) = g(x, yn);
+        u(i,0) = boundary_func(x, 0);
+        u(i,N-1) = boundary_func(x, yn);
     }
 
 
     gridtype problem;
     problem.f = DTMutableMesh2D(grid, fData.Copy());
     problem.v = DTMutableMesh2D(grid, u.Copy());
-    MultiGrid(problem, Nv, Ndown, Nup, omega, coarsest);
+    MultiGrid(problem, Nv, Ndown, Nup, omega, coarsest, &groundtruth);
+
+    auto mgres = calcNorm(residual(problem));
+    problem.v = DTMutableMesh2D(grid, groundtruth.Copy());;
+    auto gdres = calcNorm(residual(problem));
+    printf("MGres=%f\tgdres=%f\n", mgres, gdres);
+//    auto err = calcError(groundtruth, problem.v.DoubleData());
+//    printf("error:%f\n", err);
 
 
 //    DTMatlabDataFile outputErrorFile("Error.mat", DTFile::NewReadWrite);
@@ -315,7 +436,6 @@ int main(int argc,const char *argv[])
 //    computed.Add(DTMesh2D(grid,u),t); // Saves the time value to disk
 
 
-    clock_t t_before = clock();
     // Iterate, and increment t
 //    for(int iter = 0; iter < Niter; iter++){
 //
