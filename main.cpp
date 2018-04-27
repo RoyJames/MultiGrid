@@ -49,13 +49,13 @@ DTMutableDoubleArray getSparseSol(const DTMesh2D& f, double g(double, double))
     // fill boundary rows
     for (int j = 0; j < N; j++) {
         double y = yzero + j*h;
-        toReturn(0,j) = g(0, y);
+        toReturn(0,j) = g(xzero, y);
         toReturn(M-1,j) = g(xm, y);
     }
     // fill boundary columns
     for (int i = 0; i < M; i++) {
         double x = xzero + i*h;
-        toReturn(i,0) = g(x, 0);
+        toReturn(i,0) = g(x, yzero);
         toReturn(i,N-1) = g(x, yn);
     }
 
@@ -163,7 +163,7 @@ void direct_solve(gridtype &p)
     }
 };
 
-void relax(gridtype &p, int Niter, double omega)  // Gauss-Seidel
+void relax(gridtype &p, int Niter, double omega)  // Jacobi iteration
 {
     auto u = p.v.DoubleData();
     auto fData = p.f.DoubleData();
@@ -173,31 +173,38 @@ void relax(gridtype &p, int Niter, double omega)  // Gauss-Seidel
     assert(M % 2 == 1);
     double nomega = 1 - omega;
     double h2 = p.v.Grid().dx() * p.v.Grid().dx();
+    DTMutableDoubleArray u_old;
     for(int iter = 0; iter < Niter; iter++)
     {
-        for(int j = 1; j < N-1; j++){
-            if (j % 2 == 0){
-                for(int i = 1; i < M-1; i+=2){
-                    u(i, j) = u(i, j) * nomega + ((u(i-1,j)+u(i+1,j)+u(i,j-1)+u(i,j+1)+fData(i,j)*h2) * 0.25) * omega;
-                }
-            }else{
-                for(int i = 2; i < M-1; i+=2){
-                    u(i, j) = u(i, j) * nomega + ((u(i-1,j)+u(i+1,j)+u(i,j-1)+u(i,j+1)+fData(i,j)*h2) * 0.25) * omega;
-                }
+        u_old = u.Copy();
+        for(int i = 1; i < M-1; i++){
+            for(int j = 1; j < N-1; j++){
+                u(i, j) = u(i, j) * nomega + ((u_old(i-1,j)+u_old(i+1,j)+u_old(i,j-1)+u_old(i,j+1)-fData(i,j)*h2) * 0.25) * omega;
             }
         }
-        // update black
-        for(int j = 1; j < N-1; j++){
-            if (j % 2 == 0){
-                for(int i = 2; i < M-1; i+=2){
-                    u(i, j) = u(i, j) * nomega + ((u(i-1,j)+u(i+1,j)+u(i,j-1)+u(i,j+1)+fData(i,j)*h2) * 0.25) * omega;
-                }
-            }else{
-                for(int i = 1; i < M-1; i+=2){
-                    u(i, j) = u(i, j) * nomega + ((u(i-1,j)+u(i+1,j)+u(i,j-1)+u(i,j+1)+fData(i,j)*h2) * 0.25) * omega;
-                }
-            }
-        }
+//        for(int j = 1; j < N-1; j++){
+//            if (j % 2 == 0){
+//                for(int i = 1; i < M-1; i+=2){
+//                    u(i, j) = u(i, j) * nomega + ((u(i-1,j)+u(i+1,j)+u(i,j-1)+u(i,j+1)-fData(i,j)*h2) * 0.25) * omega;
+//                }
+//            }else{
+//                for(int i = 2; i < M-1; i+=2){
+//                    u(i, j) = u(i, j) * nomega + ((u(i-1,j)+u(i+1,j)+u(i,j-1)+u(i,j+1)-fData(i,j)*h2) * 0.25) * omega;
+//                }
+//            }
+//        }
+//        // update black
+//        for(int j = 1; j < N-1; j++){
+//            if (j % 2 == 0){
+//                for(int i = 2; i < M-1; i+=2){
+//                    u(i, j) = u(i, j) * nomega + ((u(i-1,j)+u(i+1,j)+u(i,j-1)+u(i,j+1)-fData(i,j)*h2) * 0.25) * omega;
+//                }
+//            }else{
+//                for(int i = 1; i < M-1; i+=2){
+//                    u(i, j) = u(i, j) * nomega + ((u(i-1,j)+u(i+1,j)+u(i,j-1)+u(i,j+1)-fData(i,j)*h2) * 0.25) * omega;
+//                }
+//            }
+//        }
     }
 }
 
@@ -273,7 +280,7 @@ DTMutableDoubleArray residual(const gridtype &p)
 }
 
 
-void MultiGrid(gridtype &prob, int Nv, int Ndown, int Nup, double omega, int coarsest, const DTDoubleArray *ref = NULL)
+DTMutableDoubleArray MultiGrid(gridtype &prob, int Nv, int Ndown, int Nup, double omega, int coarsest)
 {
     // Initialization
     int depth = int(log2(1.0f * (prob.f.DoubleData().m() - 1) / coarsest) + 0.5f);
@@ -293,10 +300,11 @@ void MultiGrid(gridtype &prob, int Nv, int Ndown, int Nup, double omega, int coa
     }
 
     // Do Nv V cycles
+    DTMutableDoubleArray resnorm(Nv+1);
+    resnorm(0) = calcNorm(residual(Grids[0]));
     for(int iter = 0; iter < Nv; iter++)
     {
-//        auto before = calcNorm(residual(Grids[0]));
-        auto before = calcError(*ref, Grids[0].v.DoubleData());
+        auto before = calcNorm(residual(Grids[0]));
         // Sweep down
         for(int iDown = 0; iDown < depth; iDown++)
         {
@@ -321,11 +329,13 @@ void MultiGrid(gridtype &prob, int Nv, int Ndown, int Nup, double omega, int coa
             relax(Grids[iUp], Nup, omega);  // Jacobi iterations after refinement
             prev = 0;   // clear previous solution
         }
-//        auto after = calcNorm(residual(Grids[0]));
-        auto after = calcError(*ref, Grids[0].v.DoubleData());
-        printf("iteration %d: before=%.4f\tafter=%.4f\n", iter+1, before, after);
+//        relax(Grids[0], 1, omega);
+        auto after = calcNorm(residual(Grids[0]));
+//        printf("iteration %d: before=%.4f\tafter=%.4f\n", iter+1, before, after);
+        resnorm(iter+1) = after;
     }
     delete[] Grids;
+    return resnorm;
 }
 
 
@@ -362,16 +372,14 @@ int main(int argc,const char *argv[])
 
 //    DTSetArguments(argc, argv);
 
-    DTMatlabDataFile inputFile("Input.mat",DTFile::ReadOnly);
+    DTMatlabDataFile inputFile("Input.mat", DTFile::ReadOnly);
     // Read in the input variables.
     DTMesh2D f;
     Read(inputFile, "f", f);
 
-    DTMutableDoubleArray groundtruth = getSparseSol(f, boundary_func);
+//    DTMutableDoubleArray groundtruth = getSparseSol(f, boundary_func);
 
     DTMesh2DGrid grid = f.Grid();
-//    DTMatlabDataFile outputFile("Output.mat",DTFile::NewReadWrite);
-//    DTSeriesMesh2D computed(outputFile,"Var");
 
     double h = grid.dx();
     double h2 = h * h;
@@ -402,13 +410,13 @@ int main(int argc,const char *argv[])
     // fill boundary rows
     for (int j = 0; j < N; j++) {
         double y = yzero + j*h;
-        u(0,j) = boundary_func(0, y);
+        u(0,j) = boundary_func(xzero, y);
         u(M-1,j) = boundary_func(xm, y);
     }
     // fill boundary columns
     for (int i = 0; i < M; i++) {
         double x = xzero + i*h;
-        u(i,0) = boundary_func(x, 0);
+        u(i,0) = boundary_func(x, yzero);
         u(i,N-1) = boundary_func(x, yn);
     }
 
@@ -416,45 +424,17 @@ int main(int argc,const char *argv[])
     gridtype problem;
     problem.f = DTMutableMesh2D(grid, fData.Copy());
     problem.v = DTMutableMesh2D(grid, u.Copy());
-    MultiGrid(problem, Nv, Ndown, Nup, omega, coarsest, &groundtruth);
+    auto resnorm = MultiGrid(problem, Nv, Ndown, Nup, omega, coarsest);
 
-    auto mgres = calcNorm(residual(problem));
-    problem.v = DTMutableMesh2D(grid, groundtruth.Copy());;
-    auto gdres = calcNorm(residual(problem));
-    printf("MGres=%f\tgdres=%f\n", mgres, gdres);
-//    auto err = calcError(groundtruth, problem.v.DoubleData());
-//    printf("error:%f\n", err);
+//    auto mgres = calcNorm(residual(problem));
+//    problem.v = DTMutableMesh2D(grid, groundtruth.Copy());
+//    auto gdres = calcNorm(residual(problem));
+//    printf("MGres=%f\tgdres=%f\n", mgres, gdres);
 
-
-//    DTMatlabDataFile outputErrorFile("Error.mat", DTFile::NewReadWrite);
-//    DTMutableDoubleArray Errors(Niter / stride + 1);
-//    int cnt = 0;
-//    Errors(0) = calcError(groundtruth, u);
-//    printf("initial error:%4f\n", Errors(0));
-
-//    double t = 0;
-//    computed.Add(DTMesh2D(grid,u),t); // Saves the time value to disk
-
-
-    // Iterate, and increment t
-//    for(int iter = 0; iter < Niter; iter++){
-//
-//        // update red
-//        for(int j = 1; j < N-1; j++){
-//            if (j % 2 == 0){
-//                for(int i = 1; i < M-1; i+=2){
-//                    u(i, j) = u(i, j) * nomega + ((u(i-1,j)+u(i+1,j)+u(i,j-1)+u(i,j+1)+fData(i,j)*h2) / 4.0) * omega;
-//                }
-//            }else{
-//                for(int i = 2; i < M-1; i+=2){
-//                    u(i, j) = u(i, j) * nomega + ((u(i-1,j)+u(i+1,j)+u(i,j-1)+u(i,j+1)+fData(i,j)*h2) / 4.0) * omega;
-//                }
-//            }
-//        }
-//    }
-//    outputErrorFile.Save(Errors, "errors");
-    // The following variables are only needed if you use DataTank to read the output
-//    outputErrorFile.Save("NumberList", "Seq_errors");
+    DTMatlabDataFile outputFile("Output.mat",DTFile::NewReadWrite);
+    outputFile.Save(problem.v.DoubleData(), "Sol");
+    outputFile.Save(resnorm, "ResNorms");
+//    outputFile.Save(groundtruth, "Groundtruth");
 
     return 0;
 }

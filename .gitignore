@@ -21,3 +21,4 @@ build/
 *.sources
 *.mat
 *.pdf
+*.fig
