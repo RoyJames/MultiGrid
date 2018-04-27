@@ -3,8 +3,8 @@ close all
 
 % default parameters
 N = 129;
-omega = 0.6;
-Sweep = [3,3];
+omega = 0.7;
+Sweep = [7,7];
 
 % Convergence for a V cycle
 Nlist = [33,65,129];
@@ -97,10 +97,10 @@ f_loc(3) = 1 / (N-1);
 f_loc(4) = f_loc(3);
 if(smooth == 1)
     for i=1:N
-        x = f_loc(1) + (i-1)*f_loc(3);
+        x = f_loc(1) + (i-1)*(f_loc(3)-f_loc(1));
         for j=1:N
-            y = f_loc(2) + (j-1)*f_loc(4);
-            f(i,j) = (x^2 + y^2) * exp(x * y);
+            y = f_loc(2) + (j-1)*(f_loc(4)-f_loc(2));
+            f(i,j) = -(x^2 + y^2) * exp(x * y);
         end
     end
 end
@@ -109,7 +109,7 @@ end
 
 
 function [ cmd, status ] = runMG( Nb,Na,omega )
-Nv = 1000;
+Nv = 50;
 cmd = ['build/Release/multigrid -v ', num2str(Nv), ' -b ', num2str(Nb), ' -a ', num2str(Na), ' -o ', num2str(omega)];
 status = system(cmd);
 
