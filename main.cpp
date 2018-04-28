@@ -43,7 +43,7 @@ typedef struct OutputWrapper
 double boundary_func(double x, double y)
 {
     return 0;
-    return 3*x+5*y;
+//    return 3*x+5*y;
 }
 
 DTMutableDoubleArray getSparseSol(const DTMesh2D& f, double g(double, double))
@@ -163,6 +163,8 @@ void direct_solve(gridtype &p)
     if(M == 3)
     {
         u(1, 1) = (u(0,1)+u(2,1)+u(1,0)+u(1,2)-fData(1,1)*h2) * factor;
+    }else{
+        printf("Error: Direct solver not defined for %dx%d matrices!\n", M, M);
     }
 };
 
@@ -181,12 +183,15 @@ void relax(gridtype &p, int Niter, double omega)  // Jacobi iteration
     for(int iter = 0; iter < Niter; iter++)
     {
         u_old = u.Copy();
+        auto ptr = u_old.Pointer();
         for(int j = 1; j < N-1; j++)
         {
             for(int i = 1; i < M-1; i++)
             {
-                u(i, j) = u_old(i, j) * nomega +
-                        ((u_old(i-1,j)+u_old(i+1,j)+u_old(i,j-1)+u_old(i,j+1)-fData(i,j)*h2) * factor) * omega;
+//                u(i + j*M) = u_old(i + j*M) * nomega +
+//                        ((u_old(i-1 + j*M)+u_old(i+1 + j*M)+u_old(i + (j-1)*M)+u_old(i + (j+1)*M)-fData(i + j*M)*h2) * factor) * omega;
+                u(i + j*M) = *(ptr + i + j*M) * nomega +
+                             ((*(ptr + i-1 + j*M) + *(ptr + i+1 + j*M) + *(ptr + i + (j-1)*M) + *(ptr + i + (j+1)*M) - fData(i + j*M)*h2) * factor) * omega;
             }
         }
     }
@@ -203,9 +208,9 @@ void coarsen(const DTDoubleArray &fine, DTMutableDoubleArray &coarse) // restric
     double neighborw = 1.0 / 8.0;
     double cornerw = 1.0 / 16.0;
     coarse = 0;
-    for(int j = 1; j < N-1; j++)
+    for(int i = 1; i < M-1; i++)
     {
-        for(int i = 1; i < M-1; i++)
+        for(int j = 1; j < N-1; j++)
         {
             coarse(i, j) = fine(i*2, j*2) * selfw +
                     (fine(i*2-1, j*2) + fine(i*2+1, j*2) + fine(i*2, j*2-1) + fine(i*2, j*2+1)) * neighborw +
@@ -221,9 +226,9 @@ void refine(const DTDoubleArray &coarse, DTMutableDoubleArray &fine)  // interpo
     assert(M == N);
     assert(M % 2 == 1);
     fine = 0;
-    for(int i = 1; i < M-1; i++)
+    for(int j = 1; j < N-1; j++)
     {
-        for(int j = 1; j < N-1; j++)
+        for(int i = 1; i < M-1; i++)
         {
             if( i % 2 == 0 && j % 2 == 0)
             {
@@ -260,17 +265,18 @@ DTMutableDoubleArray residual(const gridtype &p)
     auto res = DTMutableDoubleArray(M, N);
     res = 0;
     double invh2 = 1.0 / h2;
+    auto ptr = u.Pointer();
     for(int j = 1; j < N-1; j++)
     {
         for(int i = 1; i < M-1; i++)
         {
-            res(i, j) = fData(i, j) - ( u(i-1, j) + u(i+1, j) + u(i, j-1) + u(i, j+1) - u(i, j) * 4.0) * invh2;
+//            res(i, j) = fData(i, j) - ( u(i-1, j) + u(i+1, j) + u(i, j-1) + u(i, j+1) - u(i, j) * 4.0) * invh2;
+            res(i + j*M) = fData(i + j*M) - ( *(ptr + i-1 + j*M) + *(ptr + i+1 + j*M) + *(ptr + i + (j-1)*M) + *(ptr + i + (j+1)*M) - *(ptr + i + j*M) * 4.0) * invh2;
         }
     }
     return res;
 }
 
-// @TODO: do one part with pointer instead of indices
 MGOutputs MultiGrid(gridtype &prob, int Nv, int Ndown, int Nup, double omega, int coarsest, bool pureJacobi = false)
 {
     // Initialization

@@ -1,0 +1,1484 @@
+/* 
+ * Command line: opannotate --source 
+ * 
+ * Interpretation of command line:
+ * Output annotated source file with samples
+ * Output all files
+ * 
+ * CPU: Intel Skylake microarchitecture, speed 3500 MHz (estimated)
+ * Counted cpu_clk_unhalted events () with a unit mask of 0x00 (Core cycles when at least one thread on the physical core is not in halt state) count 100000
+ */
+/* 
+ * Total samples for file : "/home/user/Desktop/Codes/COMP662/Assignment7/main.cpp"
+ * 
+ *   7402 63.5419
+ */
+
+
+               :#include "DTArguments.h"
+               :#include "DTSaveError.h"
+               :
+               :#include "DTMatlabDataFile.h"
+               :
+               :// Common utilities
+               :#include "DTTimer.h"
+               :#include "DTUtilities.h"
+               :#include "DTDictionary.h"
+               :#include "DTIntArray.h"
+               :#include "DTError.h"
+               :#include "DTMesh2D.h"
+               :#include "DTFunction2D.h"
+               :#include "DTSeriesMesh2D.h"
+               :#include "DTTimer.h"
+               :#include "DTDoubleArrayOperators.h"
+               :#include <math.h>
+               :#include <Eigen/Sparse>
+               :#include <Eigen/Core>
+               :#include <vector>
+               :#include <boost/program_options.hpp>
+               :
+               :namespace po = boost::program_options;
+               :
+               :typedef Eigen::SparseMatrix<double> SpMat; // declares a column-major sparse matrix type of double
+               :typedef Eigen::Triplet<double> T;
+               :
+               :
+               :typedef struct grid
+               :{
+               :    DTMutableMesh2D f;  // rhs
+               :    DTMutableMesh2D v;  // solution
+               :}gridtype;
+               :
+               :typedef struct OutputWrapper
+               :{
+               :    DTDoubleArray ResidualNorms;
+               :    DTDoubleArray Times;
+               :    OutputWrapper(DTDoubleArray _res, DTDoubleArray _times) : ResidualNorms(_res), Times(_times) {}
+               :}MGOutputs;
+               :
+               :
+               :double boundary_func(double x, double y)
+               :{
+               :    return 0;
+               ://    return 3*x+5*y;
+               :}
+               :
+               :DTMutableDoubleArray getSparseSol(const DTMesh2D& f, double g(double, double))
+               :{
+               :    DTMesh2DGrid grid = f.Grid();
+               :    double h = grid.dx();
+               :    DTDoubleArray fData = f.DoubleData();
+               :
+               :    int M = fData.m();
+               :    int N = fData.n();
+               ://    printf("grid dim: %dx%d\n", M, N);
+               :
+               :    // Fill boundary condition
+               :    DTMutableDoubleArray toReturn(M, N);
+               :    double xzero = grid.Origin().x;
+               :    double yzero = grid.Origin().y;
+               :    double xm = xzero + (M-1)*h;
+               :    double yn = yzero + (N-1)*h;
+               :    // fill boundary rows
+               :    for (int j = 0; j < N; j++) {
+               :        double y = yzero + j*h;
+               :        toReturn(0,j) = g(xzero, y);
+               :        toReturn(M-1,j) = g(xm, y);
+               :    }
+               :    // fill boundary columns
+               :    for (int i = 0; i < M; i++) {
+               :        double x = xzero + i*h;
+               :        toReturn(i,0) = g(x, yzero);
+               :        toReturn(i,N-1) = g(x, yn);
+               :    }
+               :
+               :    // fill A and b;
+               :    int ukn = (M-2)*(N-2); // unknowns in total
+               :    int k = M-2;    // bandwidth for storage
+               :
+               :    std::vector<T> coefficients;            // list of non-zeros coefficients
+               :    Eigen::VectorXd bvec(ukn);                   // the right hand side-vector resulting from the constraints
+               :
+               :    for (int i = 0; i < ukn; i++) {
+               :        coefficients.push_back(T(i,i,4.0));
+               :        if( i-k >= 0 ) coefficients.push_back(T(i,i-k,-1.0));
+               :        if( i+k < ukn ) coefficients.push_back(T(i,i+k,-1.0));
+               :        if( ( (i+1)%k != 0 ) && (i+1 < ukn) ) coefficients.push_back(T(i,i+1,-1.0));
+               :        if( ( i%k != 0 ) && (i-1 >= 0) ) coefficients.push_back(T(i,i-1,-1.0));
+               :    }
+               :
+               :    SpMat A(ukn, ukn);
+               :    A.setFromTriplets(coefficients.begin(), coefficients.end());
+               :
+               :    // Fill in right hand side as a 2-D array
+               :    DTMutableDoubleArray b(M-2, N-2);
+               :    double h2 = h * h;
+               :    for(int j = 0; j < N-2; j++){
+               :        for(int i = 0; i < M-2; i++){
+               :            b(i, j) = -h2 * fData(i+1,j+1);
+               :        }
+               :    }
+               :    // Add boundary condition to rhs
+               :    for(int i = 0; i < M-2; i++){
+               :        b(i, 0) += toReturn(i+1, 0);
+               :        b(i, N-3) += toReturn(i+1, N-1);    // double check the index
+               :    }
+               :    for(int j = 0; j < N-2; j++){
+               :        b(0, j) += toReturn(0, j+1);
+               :        b(M-3, j) += toReturn(M-1, j+1);    // double check too
+               :    }
+               :
+               :    for(int i = 0; i < ukn; i++){
+               :        bvec[i] = b(i);
+               :    }
+               :
+               :    // Solving:
+               :    Eigen::SimplicialCholesky<SpMat> chol(A);  // performs a Cholesky factorization of A
+               :    Eigen::VectorXd x = chol.solve(bvec);         // use the factorization to solve for the given right hand side
+               :
+               :    // Retrieve output
+               :    int cnt = 0;
+               :    for(int j = 1; j < N-1; j++){
+               :        for(int i = 1; i < M-1; i++){
+               :            toReturn(i, j) = x[cnt++];
+               :        }
+               :    }
+               :    return toReturn;
+               :}
+               :
+               :void printMatrix(const DTDoubleArray &p)
+               :{
+               :    printf("Dimension: %dx%d\n", p.m(), p.n());
+               :    for (int i = 0; i < p.m(); i++)
+               :    {
+               :        for (int j = 0; j < p.n(); j++)
+               :        {
+               :            printf("%.3f\t", p(i,j));
+               :        }
+               :        printf("\n");
+               :    }
+               :    printf("\n");
+               :}
+               :
+               :
+               :double calcNorm(const DTDoubleArray ref)
+               :{ /* calcNorm(DTDoubleArray) total:      1  0.0086 */
+     1  0.0086 :    return std::max<double>(Maximum(ref), - Minimum(ref));
+               :}
+               :
+               :
+               :void direct_solve(gridtype &p)
+               :{
+               :    auto u = p.v.DoubleData();
+               :    auto fData = p.f.DoubleData();
+               :    int N = p.v.n();
+               :    int M = p.v.m();
+               :    assert(M == N);
+               :    assert(M % 2 == 1);
+               :    double h2 = p.v.Grid().dx() * p.v.Grid().dx();
+               :    double factor = 0.25;
+               :    if(M == 3)
+               :    {
+               :        u(1, 1) = (u(0,1)+u(2,1)+u(1,0)+u(1,2)-fData(1,1)*h2) * factor;
+               :    }else{
+               :        printf("Error: Direct solver not defined for %dx%d matrices!\n", M, M);
+               :    }
+               :};
+               :
+               :void relax(gridtype &p, int Niter, double omega)  // Jacobi iteration
+               :{ /* relax(grid&, int, double) total:   4701 40.3554 */
+               :    auto u = p.v.DoubleData();
+               :    auto fData = p.f.DoubleData();
+               :    int N = p.v.n();
+               :    int M = p.v.m();
+               :    assert(M == N);
+               :    assert(M % 2 == 1);
+               :    double nomega = 1 - omega;
+               :    double h2 = p.v.Grid().dx() * p.v.Grid().dx();
+               :    DTMutableDoubleArray u_old;
+               :    double factor = 0.25;
+     2  0.0172 :    for(int iter = 0; iter < Niter; iter++)
+               :    {
+               :        u_old = u.Copy();
+               :        auto ptr = u_old.Pointer();
+     5  0.0429 :        for(int j = 1; j < N-1; j++)
+               :        {
+   262  2.2491 :            for(int i = 1; i < M-1; i++)
+               :            {
+               ://                u(i + j*M) = u_old(i + j*M) * nomega +
+               ://                        ((u_old(i-1 + j*M)+u_old(i+1 + j*M)+u_old(i + (j-1)*M)+u_old(i + (j+1)*M)-fData(i + j*M)*h2) * factor) * omega;
+  1159  9.9494 :                u(i + j*M) = *(ptr + i + j*M) * nomega +
+  3273 28.0968 :                             ((*(ptr + i-1 + j*M) + *(ptr + i+1 + j*M) + *(ptr + i + (j-1)*M) + *(ptr + i + (j+1)*M) - fData(i + j*M)*h2) * factor) * omega;
+               :            }
+               :        }
+               :    }
+               :}
+               :
+               :void coarsen(const DTDoubleArray &fine, DTMutableDoubleArray &coarse) // restrict
+               :{ /* coarsen(DTDoubleArray const&, DTMutableDoubleArray&) total:    372  3.1934 */
+               :    int M = coarse.m();
+               :    int N = coarse.n();
+               :    assert(M == N);
+               :    assert(M % 2 == 1);
+               :
+               :    double selfw = 1.0 / 4.0;
+               :    double neighborw = 1.0 / 8.0;
+               :    double cornerw = 1.0 / 16.0;
+               :    coarse = 0;
+     3  0.0258 :    for(int i = 1; i < M-1; i++)
+               :    {
+    15  0.1288 :        for(int j = 1; j < N-1; j++)
+               :        {
+    83  0.7125 :            coarse(i, j) = fine(i*2, j*2) * selfw +
+   135  1.1589 :                    (fine(i*2-1, j*2) + fine(i*2+1, j*2) + fine(i*2, j*2-1) + fine(i*2, j*2+1)) * neighborw +
+   135  1.1589 :                    (fine(i*2-1, j*2-1) + fine(i*2+1, j*2-1) + fine(i*2+1, j*2-1) + fine(i*2+1, j*2+1)) * cornerw;
+               :        }
+               :    }
+     1  0.0086 :}
+               :
+               :void refine(const DTDoubleArray &coarse, DTMutableDoubleArray &fine)  // interpolate
+               :{ /* refine(DTDoubleArray const&, DTMutableDoubleArray&) total:    631  5.4168 */
+               :    int M = fine.m();
+               :    int N = fine.n();
+               :    assert(M == N);
+               :    assert(M % 2 == 1);
+               :    fine = 0;
+     2  0.0172 :    for(int j = 1; j < N-1; j++)
+               :    {
+    24  0.2060 :        for(int i = 1; i < M-1; i++)
+               :        {
+    27  0.2318 :            if( i % 2 == 0 && j % 2 == 0)
+               :            {
+    54  0.4636 :                fine(i,j) = coarse(i/2, j/2);
+    28  0.2404 :            } else if (i % 2 == 0 && j % 2 == 1)
+               :            {
+   111  0.9529 :                fine(i,j) = 0.5 * ( coarse(i/2, j/2) + coarse(i/2, j/2+1) );
+    30  0.2575 :            } else if (i % 2 == 1 && j % 2 == 0)
+               :            {
+   133  1.1417 :                fine(i,j) = 0.5 * ( coarse(i/2, j/2) + coarse(i/2+1, j/2) );
+    15  0.1288 :            } else if (i % 2 == 1 && j % 2 == 1)
+               :            {
+   207  1.7770 :                fine(i,j) = 0.25 * ( coarse(i/2, j/2) + coarse(i/2+1, j/2) + coarse(i/2, j/2+1) + coarse(i/2+1, j/2+1) );
+               :            }
+               :        }
+               :    }
+               ://    printf("fine grid:\n");
+               ://    printMatrix(fine);
+               ://    printf("coarse grid:\n");
+               ://    printMatrix(coarse);
+               :}
+               :
+               :DTMutableDoubleArray residual(const gridtype &p)
+               :{ /* residual(grid const&) total:   1697 14.5678 */
+               :    auto u = p.v.DoubleData();
+               :    auto fData = p.f.DoubleData();
+               :    int N = p.v.n();
+               :    int M = p.v.m();
+               :    assert(M == N);
+               :    assert(M % 2 == 1);
+     1  0.0086 :    double h2 = p.v.Grid().dx() * p.v.Grid().dx();
+               :
+               :
+               :    auto res = DTMutableDoubleArray(M, N);
+               :    res = 0;
+               :    double invh2 = 1.0 / h2;
+               :    auto ptr = u.Pointer();
+               :    for(int j = 1; j < N-1; j++)
+               :    {
+   108  0.9271 :        for(int i = 1; i < M-1; i++)
+               :        {
+               ://            res(i, j) = fData(i, j) - ( u(i-1, j) + u(i+1, j) + u(i, j-1) + u(i, j+1) - u(i, j) * 4.0) * invh2;
+  1587 13.6235 :            res(i + j*M) = fData(i + j*M) - ( *(ptr + i-1 + j*M) + *(ptr + i+1 + j*M) + *(ptr + i + (j-1)*M) + *(ptr + i + (j+1)*M) - *(ptr + i + j*M) * 4.0) * invh2;
+               :        }
+               :    }
+     1  0.0086 :    return res;
+               :}
+               :
+               :MGOutputs MultiGrid(gridtype &prob, int Nv, int Ndown, int Nup, double omega, int coarsest, bool pureJacobi = false)
+               :{
+               :    // Initialization
+               :    int depth = int(log2(1.0f * (prob.f.DoubleData().m() - 1) / coarsest) + 0.5f);
+               :    gridtype* Grids = new gridtype[depth + 1];
+               :    Grids[0] = prob;
+               :
+               :    // Allocate memory just once
+               :    for(int d = 1; d <= depth; d++)
+               :    {
+               :        int newdim = (Grids[d-1].f.DoubleData().m() - 1) / 2 + 1;
+               :        auto prevGrid = Grids[d-1].f.Grid();
+               :        DTMutableDoubleArray dData(newdim, newdim);
+               :        dData = 0;
+               :        DTMesh2DGrid grid = DTMesh2DGrid(prevGrid.Origin(), prevGrid.dx() * 2.0, prevGrid.dy() * 2.0, dData.m(),dData.n());
+               :        Grids[d].f = DTMutableMesh2D(grid, dData.Copy());
+               :        Grids[d].v = DTMutableMesh2D(grid, dData.Copy());
+               :    }
+               :
+               :
+               :    // Do Nv V cycles
+               :    DTTimer timer;
+               :    DTMutableDoubleArray resnorm(Nv+1);
+               :    DTMutableDoubleArray times(Nv+1);
+               :    resnorm(0) = calcNorm(residual(Grids[0]));
+               :    times(0) = 0;
+               :    for(int iter = 0; iter < Nv; iter++)
+               :    {
+               :        double before = calcNorm(residual(Grids[0]));
+               :        double lowest = -1;
+               :        timer.Start();  // counts time for one V cycle
+               :        if (!pureJacobi)
+               :        {
+               :            // Sweep down
+               :            for(int iDown = 0; iDown < depth; iDown++)
+               :            {
+               ://                auto before_refine = calcNorm(residual(Grids[iDown]));
+               :                relax(Grids[iDown], Ndown, omega);  // Jacobi iterations before refinement
+               ://                auto after_refine = calcNorm(residual(Grids[iDown]));
+               ://                printf("level %d:%.20f -> %.20f\n", iDown, before_refine,after_refine);
+               :                auto res = residual(Grids[iDown]);
+               :                auto next = Grids[iDown + 1].f.DoubleData();
+               :                coarsen(res, next);
+               :            }
+               :
+               :            // Apply direct solver to the coarsest grid
+               :            direct_solve(Grids[depth]);
+               :            lowest = calcNorm(residual(Grids[depth]));
+               :
+               :            // Sweep up
+               :            for(int iUp = depth-1; iUp >= 0; iUp--)
+               :            {
+               :                auto prev = Grids[iUp + 1].v.DoubleData();
+               :                auto cur = Grids[iUp].v.DoubleData();
+               :                auto refined = DTMutableDoubleArray(cur.m(), cur.n());
+               :                refine(prev, refined);
+               :                cur += refined;
+               :                relax(Grids[iUp], Nup, omega);  // Jacobi iterations after refinement
+               :                prev = 0;   // clear previous solution
+               :            }
+               :        }else{
+               :            relax(Grids[0], 1, omega);
+               :        }
+               :        times(iter+1) = times(iter) + timer.Stop();
+               :        auto after = calcNorm(residual(Grids[0]));
+               ://        printf("iteration %d: before=%.20f\tafter=%.20f\tlowest=%.9f\n", iter+1, before, after, lowest);
+               :        resnorm(iter+1) = after;
+               :    }
+               :    delete[] Grids;
+               :    return MGOutputs(resnorm, times);
+               :}
+               :
+               :
+               :int main(int argc,const char *argv[])
+               :{
+               :    // Parse program parameters
+               :    po::options_description desc( "Allowed options" );
+               :    desc.add_options()
+               :            ( "help,h", "produce help message" )
+               :            ( "Nv,v", po::value< int >()->default_value( 100 ), "number of V cycles to sweep")
+               :            ( "Nbefore,b", po::value< int >()->default_value( 3 ), "number of Jacobi sweeps before refinement" )
+               :            ( "Nafter,a", po::value< int >()->default_value( 3 ), "number of Jacobi sweeps after refinement" )
+               :            ( "omega,o", po::value< double >()->default_value( 1.8 ), "relaxation parameter" )
+               :            ( "coarsest,c", po::value< int >()->default_value( 2 ), "threshold dimension to use a direct solver" );
+               :
+               :
+               :    po::positional_options_description _p;
+               :    _p.add( "Nv", 1 );
+               :
+               :    po::variables_map vm;
+               :    po::store( po::command_line_parser( argc, argv ).options( desc ).positional( _p ).run(), vm );
+               :
+               :    if ( vm.count( "help" ))
+               :    {
+               :        std::cout << desc << "\n";
+               :        return 0;
+               :    }
+               :
+               :    int Nv = vm["Nv"].as< int >();
+               :    int Ndown = vm["Nbefore"].as< int >();
+               :    int Nup = vm["Nafter"].as< int >();
+               :    double omega = vm["omega"].as< double >();
+               :    int coarsest = vm["coarsest"].as< int >();
+               :
+               ://    DTSetArguments(argc, argv);
+               :
+               :    DTMatlabDataFile inputFile("Input.mat", DTFile::ReadOnly);
+               :    // Read in the input variables.
+               :    DTMesh2D f;
+               :    Read(inputFile, "f", f);
+               :
+               ://    DTMutableDoubleArray groundtruth = getSparseSol(f, boundary_func);
+               :
+               :    DTMesh2DGrid grid = f.Grid();
+               :
+               :    double h = grid.dx();
+               :    double h2 = h * h;
+               :    DTDoubleArray fData = f.DoubleData();
+               :
+               :    int M = fData.m();
+               :    int N = fData.n();
+               :    if (M != N)
+               :    {
+               :        printf("Error: Input is not square matrix!\n");
+               :        exit(1);
+               :    }
+               :    if (M % 2 == 0)
+               :    {
+               :        printf("Error: Input has even rows and columns!\n");
+               :        exit(1);
+               :    }
+               :
+               :    // Set initial guess to all zeros
+               :    DTMutableDoubleArray u(M, N);
+               :    u = 0;
+               :
+               :    // Set the boundary of u to the values of g
+               :    double xzero = grid.Origin().x;
+               :    double yzero = grid.Origin().y;
+               :    double xm = xzero + (M-1)*h;
+               :    double yn = yzero + (N-1)*h;
+               :    // fill boundary rows
+               :    for (int j = 0; j < N; j++) {
+               :        double y = yzero + j*h;
+               :        u(0,j) = boundary_func(xzero, y);
+               :        u(M-1,j) = boundary_func(xm, y);
+               :    }
+               :    // fill boundary columns
+               :    for (int i = 0; i < M; i++) {
+               :        double x = xzero + i*h;
+               :        u(i,0) = boundary_func(x, yzero);
+               :        u(i,N-1) = boundary_func(x, yn);
+               :    }
+               :
+               :
+               :    gridtype problem;
+               :    problem.f = DTMutableMesh2D(grid, fData.Copy());
+               :    problem.v = DTMutableMesh2D(grid, u.Copy());
+               :    auto output = MultiGrid(problem, Nv, Ndown, Nup, omega, coarsest, 0);
+               :
+               ://    auto mgres = calcNorm(residual(problem));
+               ://    problem.v = DTMutableMesh2D(grid, groundtruth.Copy());
+               ://    auto gdres = calcNorm(residual(problem));
+               ://    printf("MGres=%.20f\ngdres=%.20f\n", mgres, gdres);
+               :
+               :    DTMatlabDataFile outputFile("Output.mat",DTFile::NewReadWrite);
+               :    outputFile.Save(problem.v.DoubleData(), "Sol");
+               :    outputFile.Save(output.ResidualNorms, "ResNorms");
+               :    outputFile.Save(output.Times, "Times");
+               ://    outputFile.Save(groundtruth, "Groundtruth");
+               :
+               :    return 0;
+               :}
+/* 
+ * Total samples for file : "/home/user/Desktop/Codes/COMP662/Assignment7/DTSource/DTDoubleArray.h"
+ * 
+ *   3620 31.0756
+ */
+
+
+               :// Part of DTSource. Copyright 2004-2017. David Adalsteinsson.
+               :// see https://www.visualdatatools.com/DTSource/license.html for more information.
+               :
+               :#ifndef DTDoubleArray_Header
+               :#define DTDoubleArray_Header
+               :
+               :#include <iostream>
+               :#include <unistd.h>
+               :#include "DTLock.h"
+               :
+               :// By default, range check is turned on.
+               :#ifndef DTRangeCheck
+               :#define DTRangeCheck 1
+               :#endif
+               :
+               :// This is a 1,2,3D array container.  Standard operators are overloaded, and the usage rule are:
+               :
+               :// DTDoubleArray is a constant object.  You can not modify any of it's values.
+               :// DTMutableDoubleArray can be modified, but is derived from DTDoubleArray so it can
+               ://       be passed into any function that expects a DTDoubleArray.
+               :
+               :// The convention is that any function that takes in a DTMutableDoubleArray can be expected to
+               :// use that to modify values, otherwise the function will only read values and not modify them.
+               :
+               :// Assignment treates an array object as a pointer.  That means that
+               ://    A = B
+               :// will cause A use the same underlying pointer as B.  If both are DTDoubleArray this doesn't matter
+               :// since neither should be modified, but for mutable arrays, you need to be aware that changes to
+               :// one array will affect the other.
+               :
+               :// To take a true copy, you make that explicit with
+               ://    A = B.Copy()
+               :// this is consistent with the general philosophy of DTSource that any action that could cause
+               :// big blocks of memory to be allocated or a large computation to be instantiated is made
+               :// explicitly.  That means that automatic type conversions are avoided, and instead you make
+               :// your intention explicit with a "conversion" call such as ConvertToDouble(float array).
+               :
+               :// To allocate an array (DTMutableDoubleArray) use
+               ://     DTMutableDoubleArray A(100), B(100,100), C(100,100,100);
+               :// this will allocate a single vector of numbers, and subscript it using column-major (fortran)
+               :// format.  This is opposite to the C convention, but is the way DataTank lays out memory and is
+               :// compatible with existing code bases.  Use the Transpose(...) operator to change.
+               :// This is done because C/C++ barely can be considered to have a multi-dimensional array structure.
+               :
+               :// To access elements, use the () operator and not the [] (not overloaded).
+               ://     A(3), B(3,3), C(3,3,3)
+               :// you can access any array as a list of numbers B(3311), C(30000) etc.
+               :// the value returned is determined from the layout of the pointer.  That is
+               ://    A(i,j) = A(i + j*A.m())
+               :
+               :// To get size information, use m(),n(),o() for each dimension and Length() for the total length.
+               :// To get access to the native list, use the Pointer() member function.  This is needed when passing
+               :// the content to other libraries or to avoid the cost of the index arithmetic and range checking
+               :// (when active).
+               :
+               :
+               :// Operators such as A*A, A+A etc are declared in DTDoubleArrayOperators.h
+               :// This header file is included by DTSource.
+               :// Block subscripting to allow A(3,4...60) etc is included by using the subregion commands below, and
+               :// if you use that you need to include the DTDoubleArrayRegion.h header.  See the DTIndex.h header for more info.
+               :
+               :// Optimization consideration:
+               :// Accessing the array is thread safe, but with that comes a speed consideration.
+               :// When passing in an array into a function, you should pass it in by reference and not by value.  That is
+               ://   foo(DTDoubleArray A,...)   - do NOT do this, this calls the copy constructor, and and this requires locks.
+               ://   foo(const DTDoubleArray &A,...) - use this instead, no copy is created.
+               :
+               :class DTDoubleArrayStorage {
+               :public:
+               :    DTDoubleArrayStorage(ssize_t mv,ssize_t nv,ssize_t ov);
+               :    ~DTDoubleArrayStorage();
+               :
+               :    DTLock accessLock;
+               :    ssize_t m,n,o,mn,length;
+               :    int referenceCount;
+               :    int mutableReferences;
+               :    double *Data;
+               :    
+               :private:
+               :    DTDoubleArrayStorage(const DTDoubleArrayStorage &);
+               :    DTDoubleArrayStorage &operator=(const DTDoubleArrayStorage &);
+               :};
+               :
+               :class DTMutableDoubleArray;
+               :class DTIndex;
+               :class DTDoubleArrayRegion;
+               :class DTIntArray;
+               :class DTMutableIntArray;
+               :struct DTRange;
+               :
+               :class DTDoubleArray {
+               :
+               :public:
+               :    DTDoubleArray() : Storage(new DTDoubleArrayStorage(0,0,0)), invalidEntry(0.0) {}
+               :    virtual ~DTDoubleArray();
+               :    DTDoubleArray(const DTDoubleArray &A);
+               :    DTDoubleArray &operator=(const DTDoubleArray &A);
+               :
+               :protected:
+               :    // If you get a notice that this is protected, change DTDoubleArray to DTMutableDoubleArray
+               :    explicit DTDoubleArray(ssize_t mv,ssize_t nv=1,ssize_t ov=1) : Storage(new DTDoubleArrayStorage(mv,nv,ov)), invalidEntry(0.0) {}
+               :
+               :public:
+               :    DTMutableDoubleArray Copy() const;
+               :    
+               :    // Size information.
+               :    ssize_t m() const;
+               :    ssize_t n() const;
+               :    ssize_t o() const;
+               :    ssize_t Length() const;
+               :    bool IsEmpty() const;
+               :    bool NotEmpty() const;
+               :    
+               :    // Low level access
+               :    int ReferenceCount() const;
+               :    int MutableReferences() const; // How many mutable arrays have access to the pointer.
+               :    const double *Pointer() const {return Storage->Data;}
+               :    
+               :    // Allow A(i) and A(i,j), but check each access.
+               :#if DTRangeCheck
+               :    double operator()(ssize_t i) const
+               :        {if (i<0 || i>=Storage->length)
+               :            {PrintErrorMessage(i); return invalidEntry;}
+               :         return Storage->Data[i];}
+   216  1.8542 :    double operator()(ssize_t i,ssize_t j) const /* DTDoubleArray::operator()(long, long) const total:   1118  9.5974 */
+   341  2.9273 :        {if (i<0 || i>=Storage->m || j<0 || j>=Storage->n)
+               :            {PrintErrorMessage(i,j); return invalidEntry;}
+   561  4.8159 :         return Storage->Data[i+j*Storage->m];}
+               :    double operator()(ssize_t i,ssize_t j,ssize_t k) const
+               :        {if (i<0 || i>=Storage->m || j<0 || j>=Storage->n || k<0 || k>=Storage->o)
+               :            {PrintErrorMessage(i,j,k); return invalidEntry;}
+               :            return Storage->Data[i+j*Storage->m+k*Storage->mn];}
+               :#else
+               :    // No range check.  Slightly faster, but not as safe.
+               :    // For fastest access, extract the underlying pointer and dereference it directly.
+               :    double operator()(size_t i) const {return Storage->Data[i];}
+               :    double operator()(size_t i,size_t j) const {return Storage->Data[i+j*Storage->m];}
+               :    double operator()(size_t i,size_t j,size_t k) const {return Storage->Data[i+j*Storage->m+k*Storage->mn];}
+               :#endif
+               :
+               :    // Debug functions, since gdb can't call the () operator.
+               :    double e(int i) const;
+               :    double e(int i,int j) const;
+               :    double e(int i,int j,int k) const;
+               :    void pinfo(void) const;
+               :    void pi(int i) const; // (i,:)
+               :    void pj(int j) const; // (:,j)
+               :    void pall(void) const;  // Uses the same layout as DataTank in the variable monitor.
+               :    void prange(int s,int e) const; // Offsets [s,e], both included.
+               :    void pcrange(int s,int e) const; // Print (:,[s:e]), otherwise like pall().
+               : 	void psigns(void) const; // -,0,+
+               :
+               :    ssize_t Find(double) const; // Returns -1 if not found.
+               :    
+               :    // Support for subregions
+               :    const DTDoubleArrayRegion operator()(DTIndex) const;
+               :    const DTDoubleArrayRegion operator()(DTIndex,DTIndex) const;
+               :    const DTDoubleArrayRegion operator()(DTIndex,DTIndex,DTIndex) const;
+               :    
+               :protected:
+               :    DTDoubleArrayStorage *Storage;
+               :    double invalidEntry;
+               :    
+               :    // Error messages for index access.
+               :    void PrintErrorMessage(ssize_t i) const;
+               :    void PrintErrorMessage(ssize_t i,ssize_t j) const;
+               :    void PrintErrorMessage(ssize_t i,ssize_t j,ssize_t k) const;
+               :};
+               :
+               :class DTMutableDoubleArray : public DTDoubleArray
+               :{
+               :public:
+               :    DTMutableDoubleArray() : DTDoubleArray() {Storage->mutableReferences = 1;}
+               :    ~DTMutableDoubleArray();
+     2  0.0172 :    explicit DTMutableDoubleArray(ssize_t mv,ssize_t nv=1,ssize_t ov=1) : DTDoubleArray(mv,nv,ov) {Storage->mutableReferences = 1;} /* DTMutableDoubleArray::DTMutableDoubleArray(long, long, long) total:      2  0.0172 */
+               :    DTMutableDoubleArray(const DTMutableDoubleArray &A);
+               :
+               :    DTMutableDoubleArray &operator=(const DTMutableDoubleArray &A);
+               :
+               :    // Assignment
+               :    DTMutableDoubleArray &operator=(double a);
+               :
+               :    // Raw access
+               :    double *Pointer() {return Storage->Data;}
+               :    const double *Pointer() const {return Storage->Data;}
+               :
+               :    // High level access
+               :#if DTRangeCheck
+               :    double operator()(ssize_t i) const
+               :        {if (i<0 || i>=Storage->length)
+               :            {PrintErrorMessage(i); return invalidEntry;}
+               :            return Storage->Data[i];}
+   733  6.2924 :    double &operator()(ssize_t i) /* DTMutableDoubleArray::operator()(long) total:   2256 19.3665 */
+   566  4.8588 :        {if (i<0 || i>=Storage->length)
+               :            {PrintErrorMessage(i); return invalidEntry;}
+   957  8.2153 :        return Storage->Data[i];}
+               :    double operator()(ssize_t i,ssize_t j) const
+               :        {if (i<0 || i>=Storage->m || j<0 || j>=Storage->n)
+               :            {PrintErrorMessage(i,j); return invalidEntry;}
+               :            return Storage->Data[i+j*Storage->m];}
+    52  0.4464 :    double &operator()(ssize_t i,ssize_t j) /* DTMutableDoubleArray::operator()(long, long) total:    244  2.0946 */
+    63  0.5408 :        {if (i<0 || i>=Storage->m || j<0 || j>=Storage->n)
+               :            {PrintErrorMessage(i,j); return invalidEntry;}
+   129  1.1074 :        return Storage->Data[i+j*Storage->m];}
+               :    double operator()(ssize_t i,ssize_t j,ssize_t k) const
+               :        {if (i<0 || i>=Storage->m || j<0 || j>=Storage->n || k<0 || k>=Storage->o)
+               :            {PrintErrorMessage(i,j,k); return invalidEntry;}
+               :            return Storage->Data[i+j*Storage->m+k*Storage->mn];}
+               :    double &operator()(ssize_t i,ssize_t j,ssize_t k)
+               :        {if (i<0 || i>=Storage->m || j<0 || j>=Storage->n || k<0 || k>=Storage->o)
+               :            {PrintErrorMessage(i,j,k); return invalidEntry;}
+               :        return Storage->Data[i+j*Storage->m+k*Storage->mn];}
+               :#else
+               :    double operator()(size_t i) const {return Storage->Data[i];}
+               :    double &operator()(size_t i) {return Storage->Data[i];}
+               :    double operator()(size_t i,size_t j) const {return Storage->Data[i+j*Storage->m];}
+               :    double &operator()(size_t i,size_t j) {return Storage->Data[i+j*Storage->m];}
+               :    double operator()(size_t i,size_t j,size_t k) const {return Storage->Data[i+j*Storage->m+k*Storage->mn];}
+               :    double &operator()(size_t i,size_t j,size_t k) {return Storage->Data[i+j*Storage->m+k*Storage->mn];}
+               :#endif
+               :
+               :    // Support for subregions
+               :    const DTDoubleArrayRegion operator()(DTIndex) const;
+               :    const DTDoubleArrayRegion operator()(DTIndex,DTIndex) const;
+               :    const DTDoubleArrayRegion operator()(DTIndex,DTIndex,DTIndex) const;
+               :
+               :    DTDoubleArrayRegion operator()(DTIndex);
+               :    DTDoubleArrayRegion operator()(DTIndex,DTIndex);
+               :    DTDoubleArrayRegion operator()(DTIndex,DTIndex,DTIndex);
+               :	
+               :	void operator*=(double v);
+               :	void operator/=(double v);
+               :	void operator+=(double v);
+               :	void operator-=(double v);
+               :	
+               :	void operator+=(const DTDoubleArray &);
+               :	void operator-=(const DTDoubleArray &);
+               :	void operator*=(const DTDoubleArray &);
+               :	void operator/=(const DTDoubleArray &);
+               :};
+               :
+               :bool operator==(const DTDoubleArray &A,const DTDoubleArray &B);
+               :bool operator!=(const DTDoubleArray &A,const DTDoubleArray &B);
+               :
+               :// Misc
+               :extern DTMutableDoubleArray Transpose(const DTDoubleArray &A);
+               :extern DTMutableDoubleArray Reshape(const DTDoubleArray &A,ssize_t m,ssize_t n=1,ssize_t o=1);
+               :extern DTMutableDoubleArray Sort(const DTDoubleArray &A);
+               :extern DTMutableIntArray SortedOrder(const DTDoubleArray &A); // A(returned(i)) = i'th entry in a sorted version of A.  So A(SortedOrder(A)) = Sort(A)
+               :extern DTMutableDoubleArray FlipJ(const DTDoubleArray &A);
+               :extern void Swap(DTMutableDoubleArray &,DTMutableDoubleArray &);
+               :extern void Swap(DTDoubleArray &,DTDoubleArray &);
+               :extern void CopyValues(DTMutableDoubleArray &into,const DTDoubleArray &from);
+               :extern void CopyIntoColumn(DTMutableDoubleArray &into,const DTDoubleArray &list,ssize_t j);  // Copies into into(:,j). Needs list.Length()==into.m().
+               :extern void CopyIntoColumns(DTMutableDoubleArray &into,const DTRange &intoRange,const DTDoubleArray &from,const DTRange &fromRange);  // Copies into into(:,j). Needs list.Length()==into.m().
+               :
+               :// Memory copies and moves that make sure you are not overwriting bounds
+               :extern void MemoryCopy(DTMutableDoubleArray &into,ssize_t intoLocation,const DTDoubleArray &from); // Copies all the from values
+               :extern void MemoryCopy(DTMutableDoubleArray &into,ssize_t intoLocation,const DTDoubleArray &from,const DTRange &);
+               :extern void MemoryCopyColumns(DTMutableDoubleArray &into,ssize_t intoLocation,const DTDoubleArray &from,const DTRange &range);
+               :extern void MemoryMove(DTMutableDoubleArray &into,ssize_t intoLocation,const DTRange &range);
+               :extern void MemoryMoveColumns(DTMutableDoubleArray &into,ssize_t intoLocation,const DTRange &range);
+               :
+               :extern DTMutableDoubleArray Region(const DTDoubleArray &,const DTRange &iRange,const DTRange &jRange,const DTRange &kRange);
+               :extern DTMutableDoubleArray Region(const DTDoubleArray &,const DTRange &iRange,const DTRange &jRange);
+               :extern DTMutableDoubleArray SubArray(const DTDoubleArray &,ssize_t imin,ssize_t icount,ssize_t jmin,ssize_t jcount,ssize_t kmin,ssize_t kcount);
+               :extern DTMutableDoubleArray ExtractColumns(const DTDoubleArray &,const DTIntArray &indices);
+               :extern DTMutableDoubleArray ExtractColumns(const DTDoubleArray &,const DTRange &);
+               :extern DTMutableDoubleArray ExtractIndices(const DTDoubleArray &,const DTIntArray &indices);
+               :extern DTMutableDoubleArray ExtractIndices(const DTDoubleArray &,const DTRange &); // A single list, range in offsets
+               :
+               :extern void AddToColumnRange(DTMutableDoubleArray &A,const DTRange &r,const DTDoubleArray &B); // A(range) += B
+               :extern void AddToColumnRange(DTMutableDoubleArray &A,const DTRange &a,const DTDoubleArray &B,const DTRange b,double); // A(range) += B(range)*scale
+               :
+               :extern double InfinityNorm(const DTDoubleArray &);
+               :extern double Minimum(const DTDoubleArray &);
+               :extern double Minimum(const DTDoubleArray &,ssize_t &index);
+               :extern double Maximum(const DTDoubleArray &);
+               :extern DTMutableDoubleArray Minimum(const DTDoubleArray &,const DTDoubleArray &);
+               :extern DTMutableDoubleArray Minimum(const DTDoubleArray &,double);
+               :extern DTMutableDoubleArray Maximum(const DTDoubleArray &,const DTDoubleArray &);
+               :extern DTMutableDoubleArray Maximum(const DTDoubleArray &,double);
+               :extern bool ContainsNonFinite(const DTDoubleArray &);
+               :extern ssize_t FindIndexOfMaximum(const DTDoubleArray &A);
+               :extern double Mean(const DTDoubleArray &A);
+               :
+               :
+               :
+               :extern DTMutableDoubleArray CombineColumns(const DTDoubleArray &First,const DTDoubleArray &Second);
+               :
+               :// Changing the size of an array
+               :extern DTMutableDoubleArray TruncateSize(const DTDoubleArray &A,ssize_t length);
+               :extern DTMutableDoubleArray IncreaseSize(const DTDoubleArray &A,ssize_t addLength);
+               :extern DTMutableDoubleArray IncreaseSize(const DTDoubleArray &A);
+               :
+               :
+               :#endif
+/* 
+ * Total samples for file : "/build/glibc-Cl5G7W/glibc-2.23/string/../sysdeps/x86_64/multiarch/memcpy-avx-unaligned.S"
+ * 
+ *    171  1.4679
+ */
+
+
+ /* __memcpy_avx_unaligned total:    171  1.4679 */
+/* 
+ * Total samples for file : "/build/glibc-Cl5G7W/glibc-2.23/string/../sysdeps/x86_64/multiarch/memset-avx2.S"
+ * 
+ *     44  0.3777
+ */
+
+
+ /* __memset_avx2 total:     44  0.3777 */
+/* 
+ * Total samples for file : "/build/glibc-Cl5G7W/glibc-2.23/malloc/malloc.c"
+ * 
+ *     34  0.2919
+ */
+
+
+ /* sysmalloc total:      1  0.0086 */
+ /* systrim.isra.2 total:      1  0.0086 */
+ /* malloc total:      3  0.0258 */
+ /* free total:      3  0.0258 */
+ /* _int_malloc total:     12  0.1030 */
+ /* _int_free total:      6  0.0515 */
+ /* malloc_consolidate total:      8  0.0687 */
+/* 
+ * Total samples for file : "/build/glibc-Cl5G7W/glibc-2.23/elf/dl-lookup.c"
+ * 
+ *     19  0.1631
+ */
+
+
+ /* check_match total:      1  0.0086 */
+ /* do_lookup_x total:      9  0.0773 */
+ /* _dl_lookup_symbol_x total:      8  0.0687 */
+ /* _dl_setup_hash total:      1  0.0086 */
+/* 
+ * Total samples for file : "/build/glibc-Cl5G7W/glibc-2.23/elf/../sysdeps/x86_64/dl-machine.h"
+ * 
+ *      6  0.0515
+ */
+
+
+/* 
+ * Total samples for file : "/home/user/Desktop/Codes/COMP662/Assignment7/DTSource/DTPointer.h"
+ * 
+ *      3  0.0258
+ */
+
+
+               :// Part of DTSource. Copyright 2004-2017. David Adalsteinsson.
+               :// see https://www.visualdatatools.com/DTSource/license.html for more information.
+               :
+               :#ifndef _DTPointer_Header
+               :#define _DTPointer_Header
+               :
+               :// A very simple class that handles a reference counted pointer.
+               :// The benefit of this is that this class will "own" the pointer and free
+               :// the memory when the reference count hits 0.
+               :
+               :// Used very much like a pointer.
+               :// For example
+               ://    DTPointer<DTAudio> theAudioFile(new DTAudio(....));
+               :// allows you to pass an audio variable into and out of functions, even though
+               :// the DTAudio file does not allow assignment.
+               ://
+               :// To call a member function, use
+               ://    theAudioFile->NumberOfChannels();
+               :// just as if it was a pointer.
+               :
+               :#ifndef DTUseThreads
+               :#define DTUseThreads 0
+               :#endif
+               :
+               :#if DTUseThreads
+               :#include <pthread.h>
+               :#else
+               :#include <stdio.h>
+               :#endif
+               :
+               :template <class T>
+               :class DTPointer {
+               :public:
+               :    // Functions
+               :#if DTUseThreads
+               :    DTPointer() : ref(new int(1)), mutexLock(new pthread_mutex_t()), Value(NULL) {pthread_mutex_init(mutexLock,NULL);} // Dangerous.
+               :    DTPointer(T *Va) : ref(new int(1)), mutexLock(new pthread_mutex_t()), Value(Va) {pthread_mutex_init(mutexLock,NULL);}
+               :    explicit DTPointer(T Va) : ref(new int(1)), mutexLock(new pthread_mutex_t()), Value(new T(Va)) {pthread_mutex_init(mutexLock,NULL);}
+               :    DTPointer(const DTPointer<T> &ToC) : ref(NULL), mutexLock(NULL), Value(NULL) {
+               :        pthread_mutex_lock(ToC.mutexLock);
+               :        ref = ToC.ref;
+               :        mutexLock = ToC.mutexLock; 
+               :        Value = ToC.Value; 
+               :        (*ref)++; 
+               :        pthread_mutex_unlock(mutexLock);
+               :    }
+               :    virtual ~DTPointer() {
+               :        pthread_mutex_lock(mutexLock);
+               :        if (--(*ref)==0) {
+               :            pthread_mutex_unlock(mutexLock);
+               :            if (Value) delete Value;
+               :            pthread_mutex_destroy(mutexLock);
+               :            delete mutexLock;
+               :            delete ref;
+               :        }
+               :        else {
+               :            pthread_mutex_unlock(mutexLock);
+               :        }
+               :    }
+               :#else
+               :    DTPointer() : ref(new int(1)), Value(NULL) {} // Dangerous.
+               :    DTPointer(T *Va) : ref(new int(1)), Value(Va) {}
+               :    // explicit DTPointer(T Va) : ref(new int(1)), Value(new T(Va)) {}
+     1  0.0086 :    DTPointer(const DTPointer<T> &ToC) : ref(NULL), Value(NULL) { /* DTPointer<DTMaskOptionalData>::DTPointer(DTPointer<DTMaskOptionalData> const&) total:      3  0.0258 */
+               :        ref = ToC.ref;
+               :        Value = ToC.Value; 
+     2  0.0172 :        (*ref)++; 
+               :    }
+               :    virtual ~DTPointer() {
+               :        if (--(*ref)==0) {
+               :            if (Value) delete Value;
+               :            delete ref;
+               :        }
+               :    }
+               :#endif
+               :    
+               :    operator bool() const {return (Value!=NULL);}
+               :
+               :#if DTUseThreads
+               :    DTPointer<T> &operator=(const DTPointer<T> &ToC) {
+               :        if (ref!=ToC.ref) {
+               :            pthread_mutex_lock(ToC.mutexLock);
+               :            pthread_mutex_lock(mutexLock);
+               :            if (--(*ref)==0) {
+               :                pthread_mutex_unlock(mutexLock);
+               :                if (Value) delete Value;
+               :                pthread_mutex_destroy(mutexLock);
+               :                delete ref;
+               :            }
+               :            else {
+               :                pthread_mutex_unlock(mutexLock);
+               :            }
+               :            ref = ToC.ref;
+               :            mutexLock = ToC.mutexLock;
+               :            Value = ToC.Value;
+               :            (*ref)++;
+               :            pthread_mutex_unlock(mutexLock);
+               :        }
+               :        return *this;
+               :    }
+               :#else
+               :    DTPointer<T> &operator=(const DTPointer<T> &ToC) {
+               :        if (ref!=ToC.ref) {
+               :            if (--(*ref)==0) {
+               :                if (Value) delete Value;
+               :                delete ref;
+               :            }
+               :            ref = ToC.ref;
+               :            Value = ToC.Value;
+               :            (*ref)++;
+               :        }
+               :        return *this;
+               :    }
+               :#endif
+               :    
+               :    T *operator->() const {return Value;}
+               :
+               :    const T &operator*() const {return *Value;}
+               :
+               :#if DTUseThreads
+               :    int ReferenceCount(void) const {
+               :        pthread_mutex_lock(mutexLock);
+               :        int toReturn = *ref;
+               :        pthread_mutex_unlock(mutexLock);
+               :        return toReturn;
+               :    }
+               :#else
+               :    int ReferenceCount(void) const {
+               :        int toReturn = *ref;
+               :        return toReturn;
+               :    }
+               :#endif
+               :
+               :    const T *Data() const {return Value;}
+               :
+               :protected:
+               :
+               :    // Data
+               :    int *ref;    // count how many use this structure.
+               :#if DTUseThreads
+               :    pthread_mutex_t *mutexLock;
+               :#endif
+               :    T *Value;
+               :};
+               :
+               :template <class T>
+               :class DTMutablePointer : public DTPointer<T> {
+               :public:
+               :
+               :    DTMutablePointer() : DTPointer<T>() {}
+               :    DTMutablePointer(T *Va) : DTPointer<T>(Va) {}
+               :    // explicit DTMutablePointer(T Va) : DTPointer<T>(Va) {}
+               :    DTMutablePointer(const DTMutablePointer<T> &A) : DTPointer<T>(A) {}
+               :
+               :    DTMutablePointer<T> &operator=(const DTMutablePointer<T> &A) {DTPointer<T>::operator=(A); return *this;}
+               :    
+               :    T *operator->() {return DTPointer<T>::Value;}
+               :    T *operator->() const {return DTPointer<T>::Value;}
+               :
+               :    T &operator*() {return *DTPointer<T>::Value;}
+               :    const T &operator*() const {return *DTPointer<T>::Value;}
+               :
+               :    T *Data() {return DTPointer<T>::Value;}
+               :    const T *Data() const {return DTPointer<T>::Value;}
+               :
+               :};
+               :    
+               :#endif
+/* 
+ * Total samples for file : "/home/user/Desktop/Codes/COMP662/Assignment7/DTSource/DTMesh2DGrid.h"
+ * 
+ *      3  0.0258
+ */
+
+
+               :// Part of DTSource. Copyright 2004-2017. David Adalsteinsson.
+               :// see http://www.visualdatatools.com/DTSource/license.html for more information.
+               :
+               :#ifndef DTMesh2DGrid_H
+               :#define DTMesh2DGrid_H
+               :
+               :#include "DTDataStorage.h"
+               :#include "DTPoint2D.h"
+               :#include "DTMask.h"
+               :
+               :struct DTRegion2D;
+               :class DTShiftScale2D;
+               :
+               :// This class describes the location in space for several variable types, such as DTMesh2D and DTBitmap2D.
+               :// This maps into the "2D Mesh Grid" variable in DataTank.
+               :
+               :// If you want a non-uniform grid use the DTStructuredGrid2D variable type.
+               :
+     3  0.0258 :class DTMesh2DGrid { /* DTMesh2DGrid::~DTMesh2DGrid()      1  0.0086, DTMesh2DGrid::DTMesh2DGrid(DTMesh2DGrid const&)      2  0.0172, total:      3  0.0258 */
+               :public:
+               :    DTMesh2DGrid() : isEmpty(true), _m(0), _n(0), _origin(0,0), _dx(1.0), _dy(1.0), maskDefined(false), mask() {};
+               :    DTMesh2DGrid(ssize_t m,ssize_t n);
+               :    DTMesh2DGrid(DTPoint2D origin,double h);
+               :    DTMesh2DGrid(DTPoint2D origin,double dx,double dy);
+               :    DTMesh2DGrid(DTPoint2D origin,double dx,double dy,ssize_t m,ssize_t n);
+               :    DTMesh2DGrid(DTPoint2D origin,double dx,double dy,const DTMask &);
+               :
+               :    bool IsEmpty(void) const {return isEmpty;}
+               :    int m(void) const {return _m;}
+               :    int n(void) const {return _n;}
+               :
+               :    DTPoint2D Origin(void) const {return _origin;}
+               :    double dx(void) const {return _dx;}
+               :    double dy(void) const {return _dy;}
+               :
+               :    bool IsStandard(void) const {return (_origin.x==0.0 && _origin.y==0.0 && _dx==1.0 && _dy==1.0 && maskDefined==false);}
+               :    bool MaskDefined(void) const {return maskDefined;}
+               :    DTMask Mask(void) const;
+               :    
+               :    DTPoint2D GridToSpace(const DTPoint2D &P) const {return DTPoint2D(P.x*_dx + _origin.x,P.y*_dy + _origin.y);}
+               :    DTPoint2D SpaceToGrid(const DTPoint2D &P) const {return DTPoint2D((P.x-_origin.x)/_dx,(P.y-_origin.y)/_dy);}
+               :
+               :    // Functions for the debugging.
+               :    void pinfo(void) const;
+               :
+               :private:
+               :    bool isEmpty;
+               :    int _m,_n;
+               :    DTPoint2D _origin;
+               :    double _dx,_dy;
+               :    bool maskDefined;
+               :    DTMask mask;
+               :};
+               :
+               :extern bool operator==(const DTMesh2DGrid &,const DTMesh2DGrid &);
+               :extern bool operator!=(const DTMesh2DGrid &,const DTMesh2DGrid &);
+               :
+               :extern bool SameExceptForMask(const DTMesh2DGrid &,const DTMesh2DGrid &); // Allows for the origin to be slightly different to allow for rounding errors.
+               :
+               :extern DTRegion2D BoundingBox(const DTMesh2DGrid &v);
+               :
+               :extern DTMesh2DGrid ApplyMask(const DTMesh2DGrid &Grid,const DTMask &);
+               :extern DTMesh2DGrid RemoveMask(const DTMesh2DGrid &Grid);
+               :extern DTMesh2DGrid RemoveSize(const DTMesh2DGrid &Grid);
+               :extern DTMesh2DGrid ChangeSize(const DTMesh2DGrid &Grid,ssize_t m,ssize_t n);
+               :extern DTMesh2DGrid CellCenters(const DTMesh2DGrid &); // Strips the mask
+               :extern DTMesh2DGrid Crop(const DTMesh2DGrid &,const DTRegion2D &);
+               :extern DTMesh2DGrid Region(const DTMesh2DGrid &,const DTRange &iRange,const DTRange &jRange);
+               :extern DTMesh2DGrid operator*(const DTShiftScale2D &,const DTMesh2DGrid &);
+               :
+               :extern DTMesh2DGrid GridShift(const DTMesh2DGrid &,int i,int j);
+               :
+               :
+               :// Reading and writing
+               :extern void Read(const DTDataStorage &input,const std::string &name,DTMesh2DGrid &toReturn);
+               :extern void Write(DTDataStorage &output,const std::string &name,const DTMesh2DGrid &theVar);
+               :extern void WriteOne(DTDataStorage &output,const std::string &name,const DTMesh2DGrid &toWrite); // One time value, self documenting.
+               :extern void WriteNoSize(DTDataStorage &output,const std::string &name,const DTMesh2DGrid &theVar);
+               :
+               :#endif
+/* 
+ * Total samples for file : "DTMatlabDataFile.cpp"
+ * 
+ *      1  0.0086
+ */
+
+<credited to line zero>      1  0.0086 :
+               : /* void std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> >::_M_construct<char const*>(char const*, char const*, std::forward_iterator_tag) [clone .isra.93] total:      1  0.0086 */
+               :/* 
+               : * Total samples for file : "DTMatlabDataFile.cpp"
+               : * 
+               : *      1  0.0086
+               : */
+               :
+               :<credited to line zero>      1  0.0086 :
+               :/* 
+               : * Command line: opannotate --source --output-dir=. 
+               : * 
+               : * Interpretation of command line:
+               : * Output annotated source file with samples
+               : * Output all files
+               : * 
+               : * CPU: Intel Skylake microarchitecture, speed 3500 MHz (estimated)
+               : * Counted cpu_clk_unhalted events () with a unit mask of 0x00 (Core cycles when at least one thread on the physical core is not in halt state) count 100000
+               : */
+/* 
+ * Total samples for file : "/home/user/Desktop/Codes/COMP662/Assignment7/DTSource/DTMesh2D.h"
+ * 
+ *      1  0.0086
+ */
+
+
+               :// Part of DTSource. Copyright 2004-2017. David Adalsteinsson.
+               :// see http://www.visualdatatools.com/DTSource/license.html for more information.
+               :
+               :#ifndef DTMesh2D_H
+               :#define DTMesh2D_H
+               :
+               :#include "DTFloatArray.h"
+               :#include "DTDoubleArray.h"
+               :#include "DTDataStorage.h"
+               :#include "DTMesh2DGrid.h"
+               :
+               :struct DTRegion1D;
+               :struct DTShiftScale2D;
+               :class DTMutableMesh2D;
+               :
+               :// 2D Mesh.  Values on a uniform grid.  The grid is specified by a DTMesh2DGrid object.
+               :// The grid might possibly have a mask defined.
+               :
+               :// The data in the mesh in unchangeable, and this class is not meant to be a base class for
+               :// computations, but instead a IO repository.
+               :
+               :// To be able to change the values, you can use
+               :// meshvariable.Data().Copy()
+               :// to get a copy of the data.  Note that when you create a mesh with
+               ://    DTMesh2D(newValues,oldMesh.Grid())
+               :// or equivalent, the data in the newValues array will be used, so if this entry is not saved immediately, 
+               :// any subsequent changes in newValues will affect the data array stored in the mesh.  You can make sure
+               :// this will not happen by doing
+               ://    DTMesh2D(newValues.Copy(),oldMesh.Grid())
+               :
+               :class DTMesh2D {
+               :public:
+               :    DTMesh2D() : _grid(), _floatData(), _doubleData() {};
+               :    DTMesh2D(const DTMesh2DGrid &grid,const DTDoubleArray &input);
+               :    DTMesh2D(const DTMesh2DGrid &grid,const DTFloatArray &input);
+               :    
+               :    bool IsEmpty(void) const {return (_floatData.IsEmpty() && _doubleData.IsEmpty());}
+               :    
+               :    bool FloatPrecision(void) const {return (_floatData.NotEmpty());}
+               :    bool DoublePrecision(void) const {return (_doubleData.NotEmpty());}
+               :    
+               :    DTDoubleArray DoubleData(void) const;
+               :    DTFloatArray FloatData(void) const;
+               :    DTMesh2DGrid Grid(void) const {return _grid;}
+               :    
+               :    ssize_t m(void) const {return _grid.m();}
+               :    ssize_t n(void) const {return _grid.n();}
+               :
+               :    // Functions for the debugging.
+               :    void pinfo(void) const;
+               :
+               :protected:
+               :    DTMesh2DGrid _grid;
+               :    DTFloatArray _floatData;
+               :    DTDoubleArray _doubleData;
+               :};
+               :
+               :extern bool CompatibleMeshes(const DTMesh2D &,const DTMesh2D &); // Same grid, both float/double
+               :
+               :extern bool operator==(const DTMesh2D &,const DTMesh2D &);
+               :extern bool operator!=(const DTMesh2D &,const DTMesh2D &);
+               :
+               :extern DTMesh2D ApplyMask(const DTMesh2D &,const DTMask &);
+               :extern DTMesh2D RemoveMask(const DTMesh2D &);
+               :extern DTMesh2D Crop(const DTMesh2D &,const DTRegion2D &);
+               :extern DTMesh2D operator*(const DTShiftScale2D &,const DTMesh2D &);
+               :extern DTMutableMesh2D operator-(const DTMesh2D &,const DTMesh2D &);
+               :extern DTMutableMesh2D operator+(const DTMesh2D &,double);
+               :extern DTMutableMesh2D operator*(const DTMesh2D &,double);
+               :extern DTMutableMesh2D operator-(const DTMesh2D &);
+               :
+               :extern DTMask FindRange(const DTMesh2D &,const DTRegion1D &);
+               :extern DTMesh2D ConvertToFloat(DTMesh2D);
+               :extern DTMesh2D ConvertToDouble(DTMesh2D);
+               :
+               :extern DTRegion2D BoundingBox(const DTMesh2D &);
+               :extern DTRegion1D ValueRange(const DTMesh2D &);
+               :extern double SquareAverage(const DTMesh2D &);
+               :extern double Maximum(const DTMesh2D &);
+               :
+               :// Reading and writing
+               :extern void Read(const DTDataStorage &input,const std::string &name,DTMesh2D &toReturn);
+               :extern void Write(DTDataStorage &output,const std::string &name,const DTMesh2D &theMesh);
+               :extern void WriteOne(DTDataStorage &output,const std::string &name,const DTMesh2D &toWrite); // One time value, self documenting.
+               :
+               :extern double Minimum(const DTMesh2D &);
+               :extern double Maximum(const DTMesh2D &);
+               :extern DTMutableMesh2D Minimum(const DTMesh2D &,const DTMesh2D &);
+               :extern DTMutableMesh2D Maximum(const DTMesh2D &,const DTMesh2D &);
+               :
+               :// Mutable mesh version.  Maintains the grid. When you combine two meshes they have to have the
+               :// same resolution (float/double)
+               :
+               :class DTMutableMesh2D : public DTMesh2D
+               :{
+               :public:
+               :    DTMutableMesh2D() : DTMesh2D() {}
+               :    DTMutableMesh2D(const DTMesh2DGrid &grid); // Double array
+               :    DTMutableMesh2D(const DTMesh2DGrid &grid,const DTMutableDoubleArray &input);
+               :    DTMutableMesh2D(const DTMesh2DGrid &grid,const DTMutableFloatArray &input);
+               :
+     1  0.0086 :    DTMutableDoubleArray DoubleData(void) const {return _mutableDoubleData;} /* DTMutableMesh2D::DoubleData() const total:      1  0.0086 */
+               :    DTMutableFloatArray FloatData(void) const {return _mutableFloatData;}
+               :
+               :    void operator-=(const DTMesh2D &);
+               :    void operator+=(const DTMesh2D &);
+               :    void operator*=(const DTMesh2D &);
+               :    void operator*=(const DTDoubleArray &);
+               :    void operator/=(const DTMesh2D &);
+               :    void operator*=(double);
+               :
+               :    void operator=(double);
+               :	void SetMaskedOutValues(double); // Only set values outside the mask.
+               :
+               :private:
+               :    DTMutableDoubleArray _mutableDoubleData;
+               :    DTMutableFloatArray _mutableFloatData;
+               :};
+               :
+               :extern DTMutableMesh2D Copy(const DTMesh2D &);
+               :
+               :extern DTMutableMesh2D ConvertToFloat(const DTMutableMesh2D &);
+               :extern DTMutableMesh2D ConvertToDouble(const DTMutableMesh2D &);
+               :
+               :extern DTMutableMesh2D ApplyMask(const DTMutableMesh2D &mesh,const DTMask &mask);
+               :extern DTMutableMesh2D RemoveMask(const DTMutableMesh2D &);
+               :
+               :
+               :#endif
+/* 
+ * Total samples for file : "/home/user/Desktop/Codes/COMP662/Assignment7/DTSource/DTIntArray.h"
+ * 
+ *      1  0.0086
+ */
+
+
+               :// Part of DTSource. Copyright 2004-2017. David Adalsteinsson.
+               :// see https://www.visualdatatools.com/DTSource/license.html for more information.
+               :
+               :#ifndef DTIntArray_Header
+               :#define DTIntArray_Header
+               :
+               :#include <iostream>
+               :#include <unistd.h>
+               :#include "DTLock.h"
+               :
+               :// By default, range check is turned on.
+               :#ifndef DTRangeCheck
+               :#define DTRangeCheck 1
+               :#endif
+               :
+               :// An array of int numbers.  See comments inside DTDoubleArray for more information.
+               :class DTIntArrayStorage {
+               :public:
+               :    DTIntArrayStorage(ssize_t mv,ssize_t nv,ssize_t ov);
+               :    ~DTIntArrayStorage();
+               :
+               :    DTLock accessLock;
+               :    ssize_t m,n,o,mn,length;
+               :    int referenceCount;
+               :    int *Data;
+               :    
+               :private:
+               :    DTIntArrayStorage(const DTIntArrayStorage &);
+               :    DTIntArrayStorage &operator=(const DTIntArrayStorage &);
+               :};
+               :
+               :class DTMutableIntArray;
+               :class DTIndex;
+               :class DTIntArrayRegion;
+               :struct DTRange;
+               :
+               :class DTIntArray {
+               :
+               :public:
+               :    DTIntArray() : Storage(new DTIntArrayStorage(0,0,0)), invalidEntry(0) {}
+               :    virtual ~DTIntArray() {Storage->accessLock.Lock(); int refCnt = (--Storage->referenceCount); Storage->accessLock.Unlock(); if (refCnt==0) delete Storage;}
+     1  0.0086 :    DTIntArray(const DTIntArray &A) : Storage(A.Storage), invalidEntry(0) {Storage->accessLock.Lock(); Storage->referenceCount++;Storage->accessLock.Unlock(); } /* DTIntArray::DTIntArray(DTIntArray const&) total:      1  0.0086 */
+               :    DTIntArray &operator=(const DTIntArray &A);
+               :
+               :protected:
+               :    // If you get a notice that this is protected, change DTIntArray to DTMutableIntArray
+               :    explicit DTIntArray(ssize_t mv,ssize_t nv=1,ssize_t ov=1) : Storage(new DTIntArrayStorage(mv,nv,ov)), invalidEntry(0) {}
+               :
+               :public:
+               :    DTMutableIntArray Copy() const;
+               :
+               :    // Size information.
+               :    ssize_t m() const {return Storage->m;}
+               :    ssize_t n() const {return Storage->n;}
+               :    ssize_t o() const {return Storage->o;}
+               :    ssize_t Length() const {return Storage->length;}
+               :    bool IsEmpty() const {return (Storage->length==0);}
+               :    bool NotEmpty() const {return (Storage->length!=0);}
+               :
+               :    // Low level access
+               :    int ReferenceCount() const {Storage->accessLock.Lock(); int refCnt = Storage->referenceCount; Storage->accessLock.Unlock(); return refCnt;}
+               :    const int *Pointer() const {return Storage->Data;}
+               :
+               :    // Allow A(i) and A(i,j), but check each access.
+               :    int operator()(ssize_t i) const
+               :        {if (i<0 || i>=Storage->length)
+               :            {PrintErrorMessage(i); return invalidEntry;}
+               :            return Storage->Data[i];}
+               :    int operator()(ssize_t i,ssize_t j) const
+               :        {if (i<0 || i>=Storage->m || j<0 || j>=Storage->n)
+               :            {PrintErrorMessage(i,j); return invalidEntry;}
+               :            return Storage->Data[i+j*Storage->m];}
+               :    int operator()(ssize_t i,ssize_t j,ssize_t k) const
+               :        {if (i<0 || i>=Storage->m || j<0 || j>=Storage->n || k<0 || k>=Storage->o)
+               :            {PrintErrorMessage(i,j,k); return invalidEntry;}
+               :            return Storage->Data[i+j*Storage->m+k*Storage->mn];}
+               :
+               :    // Debug functions, since gdb can't call the () operator.
+               :    int e(int i) const;
+               :    int e(int i,int j) const;
+               :    int e(int i,int j,int k) const;
+               :    void pinfo(void) const;
+               :    void pi(int i) const; // (i,:)
+               :    void pj(int j) const; // (:,j)
+               :    void pall(void) const;  // Uses the same layout as DataTank in the variable monitor.
+               :    void prange(int s,int e) const; // Offsets [s,e], both included.
+               :    void pcrange(int s,int e) const; // Print (:,[s:e]), otherwise like pall().
+               :	void psigns(void) const; // -,0,+
+               :
+               :    ssize_t Find(int v) const;
+               :    
+               :    // Support for subregions
+               :    const DTIntArrayRegion operator()(DTIndex) const;
+               :    const DTIntArrayRegion operator()(DTIndex,DTIndex) const;
+               :    const DTIntArrayRegion operator()(DTIndex,DTIndex,DTIndex) const;
+               :    
+               :protected:
+               :    DTIntArrayStorage *Storage;
+               :    int invalidEntry;
+               :
+               :    // Error messages for index access.
+               :    void PrintErrorMessage(ssize_t i) const;
+               :    void PrintErrorMessage(ssize_t i,ssize_t j) const;
+               :    void PrintErrorMessage(ssize_t i,ssize_t j,ssize_t k) const;
+               :};
+               :
+               :class DTMutableIntArray : public DTIntArray
+               :{
+               :public:
+               :    DTMutableIntArray() : DTIntArray() {}
+               :    explicit DTMutableIntArray(ssize_t mv,ssize_t nv=1,ssize_t ov=1) : DTIntArray(mv,nv,ov) {}
+               :    DTMutableIntArray(const DTMutableIntArray &A) : DTIntArray(A) {}
+               :
+               :    DTMutableIntArray &operator=(const DTMutableIntArray &A) {DTIntArray::operator=(A); return *this;}
+               :
+               :    // Assignment
+               :    DTMutableIntArray &operator=(int a);
+               :
+               :    // Raw access
+               :    int *Pointer() {return Storage->Data;}
+               :    const int *Pointer() const {return Storage->Data;}
+               :
+               :    // High level access
+               :    int operator()(ssize_t i) const
+               :        {if (i<0 || i>=Storage->length)
+               :            {PrintErrorMessage(i); return invalidEntry;}
+               :            return Storage->Data[i];}
+               :    int &operator()(ssize_t i)
+               :        {if (i<0 || i>=Storage->length)
+               :            {PrintErrorMessage(i); return invalidEntry;}
+               :        return Storage->Data[i];}
+               :    int operator()(ssize_t i,ssize_t j) const
+               :        {if (i<0 || i>=Storage->m || j<0 || j>=Storage->n)
+               :            {PrintErrorMessage(i,j); return invalidEntry;}
+               :            return Storage->Data[i+j*Storage->m];}
+               :    int &operator()(ssize_t i,ssize_t j)
+               :        {if (i<0 || i>=Storage->m || j<0 || j>=Storage->n)
+               :            {PrintErrorMessage(i,j); return invalidEntry;}
+               :        return Storage->Data[i+j*Storage->m];}
+               :    int operator()(ssize_t i,ssize_t j,ssize_t k) const
+               :        {if (i<0 || i>=Storage->m || j<0 || j>=Storage->n || k<0 || k>=Storage->o)
+               :            {PrintErrorMessage(i,j,k); return invalidEntry;}
+               :            return Storage->Data[i+j*Storage->m+k*Storage->mn];}
+               :    int &operator()(ssize_t i,ssize_t j,ssize_t k)
+               :        {if (i<0 || i>=Storage->m || j<0 || j>=Storage->n || k<0 || k>=Storage->o)
+               :            {PrintErrorMessage(i,j,k); return invalidEntry;}
+               :        return Storage->Data[i+j*Storage->m+k*Storage->mn];}
+               :    
+               :    // Support for subregions
+               :    const DTIntArrayRegion operator()(DTIndex) const;
+               :    const DTIntArrayRegion operator()(DTIndex,DTIndex) const;
+               :    const DTIntArrayRegion operator()(DTIndex,DTIndex,DTIndex) const;
+               :    
+               :    DTIntArrayRegion operator()(DTIndex);
+               :    DTIntArrayRegion operator()(DTIndex,DTIndex);
+               :    DTIntArrayRegion operator()(DTIndex,DTIndex,DTIndex);
+               :};
+               :
+               :bool operator==(const DTIntArray &A,const DTIntArray &B);
+               :bool operator!=(const DTIntArray &A,const DTIntArray &B);
+               :
+               :// Misc
+               :extern DTMutableIntArray Transpose(const DTIntArray &A);
+               :extern DTMutableIntArray Reshape(const DTIntArray &A,ssize_t m,ssize_t n=1,ssize_t o=1);
+               :extern DTMutableIntArray Sort(const DTIntArray &A);
+               :extern DTMutableIntArray FlipJ(const DTIntArray &A);
+               :
+               :extern void Swap(DTMutableIntArray &,DTMutableIntArray &);
+               :extern void Swap(DTIntArray &,DTIntArray &);
+               :extern void CopyValues(DTMutableIntArray &into,const DTIntArray &from);
+               :extern void CopyValuesIntoAndAdd(DTMutableIntArray &into,ssize_t offset,const DTIntArray &from,ssize_t add);
+               :extern void CopyIntoColumn(DTMutableIntArray &into,const DTIntArray &list,ssize_t j);  // Copies into into(:,j). Needs list.Length()==into.m().
+               :extern void CopyIntoColumns(DTMutableIntArray &into,const DTRange &intoRange,const DTIntArray &from,const DTRange &fromRange);  // Copies into into(:,j). Needs list.Length()==into.m().
+               :
+               :// Memory copies and moves that make sure you are not overwriting bounds
+               :extern void MemoryCopy(DTMutableIntArray &into,ssize_t intoLocation,const DTIntArray &from,ssize_t fromLocation,ssize_t numberOfEntries);
+               :extern void MemoryCopyColumns(DTMutableIntArray &into,ssize_t intoLocation,const DTIntArray &from,ssize_t fromLocation,ssize_t numberOfColumns);
+               :extern void MemoryMove(DTMutableIntArray &into,ssize_t intoLocation,ssize_t fromLocation,ssize_t numberOfEntries);
+               :extern void MemoryMoveColumns(DTMutableIntArray &into,ssize_t intoLocation,ssize_t fromLocation,ssize_t numberOfColumns);
+               :
+               :extern DTMutableIntArray ExtractColumns(const DTIntArray &,const DTIntArray &indices);
+               :extern DTMutableIntArray ExtractColumns(const DTIntArray &,const DTRange &);
+               :extern DTMutableIntArray ExtractIndices(const DTIntArray &,const DTIntArray &indices);
+               :extern DTMutableIntArray ExtractIndices(const DTIntArray &,const DTRange &); // A single list, range in offsets
+               :
+               :extern int Minimum(const DTIntArray &);
+               :extern int Maximum(const DTIntArray &);
+               :extern void Range(const DTIntArray &,int &minV,int &maxV);
+               :
+               :extern ssize_t FindEntry(const DTIntArray &,int); // Linear search for first entry (offset) -1 if not found
+               :extern ssize_t FindEntryInSorted(const DTIntArray &,int); // Same as above, just expects list to be increasing.
+               :
+               :extern DTMutableIntArray CombineRows(const DTIntArray &,const DTIntArray &);
+               :extern DTMutableIntArray CombineColumns(const DTIntArray &,const DTIntArray &);
+               :
+               :// Changing the size of an array
+               :extern DTMutableIntArray TruncateSize(const DTIntArray &A,ssize_t length);
+               :extern DTMutableIntArray IncreaseSize(const DTIntArray &A,ssize_t addLength);
+               :extern DTMutableIntArray IncreaseSize(const DTIntArray &A); // Doubles the size.
+               :
+               :#endif
+/* 
+ * Total samples for file : "/build/glibc-Cl5G7W/glibc-2.23/string/../sysdeps/x86_64/multiarch/../strcmp.S"
+ * 
+ *      1  0.0086
+ */
+
+
+ /* strcmp total:      1  0.0086 */
+/* 
+ * Total samples for file : "/build/glibc-Cl5G7W/glibc-2.23/stdlib/cxa_atexit.c"
+ * 
+ *      1  0.0086
+ */
+
+
+ /* __cxa_atexit total:      1  0.0086 */
+/* 
+ * Total samples for file : "/build/glibc-Cl5G7W/glibc-2.23/elf/dl-addr.c"
+ * 
+ *      1  0.0086
+ */
+
+
+ /* _dl_addr total:      1  0.0086 */
+/* 
+ * Total samples for file : "/build/glibc-Cl5G7W/glibc-2.23/elf/../sysdeps/x86_64/dl-trampoline.h"
+ * 
+ *      1  0.0086
+ */
+
+
+ /* _dl_runtime_resolve_avx total:      1  0.0086 */

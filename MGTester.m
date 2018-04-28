@@ -8,9 +8,9 @@ Sweep = [3,3];
 Nv = 50;
 
 % Convergence for a V cycle
-% Nlist = [33,65,129];
-Nlist = [2^15+1];
-[ cycleline, lgds ] = MGVCycle(Nlist,Sweep,omega,0);
+Nlist = [33,65,129];
+% Nlist = [2^13+1];
+[ cycleline, lgds ] = MGVCycle(Nlist,Sweep,omega,1);
 figure
 semilogy(cycleline);
 legend(lgds);
@@ -19,36 +19,36 @@ xlabel('# V cycle')
 ylabel('Inf norm of residuals')
 grid on
 
-% % Vary the relaxation parameter
-% omegas = [0.1,0.3,0.5,0.7,0.9];
-% [ cycleline, lgds ] = MGRelaxation(N,Sweep,omegas);
-% figure
-% semilogy(cycleline);
-% legend(lgds);
-% title('Vary the relaxation parameter');
-% xlabel('# V cycle')
-% ylabel('Inf norm of residuals')
-% grid on
-% 
-% % Vary the sweep count
-% Sweeps = [1,2;2,1;3,3;5,5;7,7];
-% [ cycleline, lgds, timeline ] = MGSpeed(N,Sweeps,omega);
-% corrected_x = repmat([1:Nv+1]',1,size(Sweeps,1)).*sum(Sweeps,2)';
-% figure
-% semilogy(corrected_x, cycleline);
-% legend(lgds);
-% title('Vary the sweep count');
-% xlabel('# corrected iterations')
-% ylabel('Inf norm of residuals')
-% grid on
-% 
-% figure
-% semilogy(timeline, cycleline);
-% legend(lgds);
-% title('Vary the sweep count');
-% xlabel('Time in seconds')
-% ylabel('Inf norm of residuals')
-% grid on
+% Vary the relaxation parameter
+omegas = [0.1,0.3,0.5,0.7,0.9];
+[ cycleline, lgds ] = MGRelaxation(N,Sweep,omegas);
+figure
+semilogy(cycleline);
+legend(lgds);
+title('Vary the relaxation parameter');
+xlabel('# V cycle')
+ylabel('Inf norm of residuals')
+grid on
+
+% Vary the sweep count
+Sweeps = [1,2;2,1;3,3;5,5;7,7];
+[ cycleline, lgds, timeline ] = MGSpeed(N,Sweeps,omega);
+corrected_x = repmat([1:Nv+1]',1,size(Sweeps,1)).*sum(Sweeps,2)';
+figure
+semilogy(corrected_x, cycleline);
+legend(lgds);
+title('Vary the sweep count');
+xlabel('# corrected iterations')
+ylabel('Inf norm of residuals')
+grid on
+
+figure
+semilogy(timeline, cycleline);
+legend(lgds);
+title('Vary the sweep count');
+xlabel('Time in seconds')
+ylabel('Inf norm of residuals')
+grid on
 
 % Go for broke
 % Nbig = 2^15+1;
@@ -115,7 +115,7 @@ for i=1:len
     load Output.mat
     lines = [lines, ResNorms];
     timeline = [timeline, Times];
-    legends{i} = ['N_a=', num2str(Sweeps(i,1)), ' N_b=', num2str(Sweeps(i,2))];
+    legends{i} = ['N_b=', num2str(Sweeps(i,1)), ' N_a=', num2str(Sweeps(i,2))];
 end
 end
 
@@ -129,7 +129,7 @@ end
 
 function [ f ] = generateInput( N, smooth )
 load('InputStd.mat')
-f = rand(N, N);
+f = zeros(N, N);
 f_loc(3) = 1 / (N-1);
 f_loc(4) = f_loc(3);
 if(smooth == 1)
@@ -140,8 +140,10 @@ if(smooth == 1)
             f(i,j) = -(x^2 + y^2) * exp(x * y);
         end
     end
+else
+    f(2:end-1,2:end-1) = rand(N-2,N-2);
 end
-save Input.mat Seq_f f f_loc -v4
+save Input.mat Seq_f f f_loc -v4 -double
 end
 
 

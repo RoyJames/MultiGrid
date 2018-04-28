@@ -8,9 +8,9 @@ Sweep = [3,3];
 Nv = 50;
 
 % Convergence for a V cycle
-% Nlist = [33,65,129];
-Nlist = [257,513,32769];
-[ cycleline, lgds ] = MGVCycle(Nlist,Sweep,omega);
+Nlist = [33,65,129];
+% Nlist = [2^13+1];
+[ cycleline, lgds ] = MGVCycle(Nlist,Sweep,omega,1`);
 figure
 semilogy(cycleline);
 legend(lgds);
@@ -79,13 +79,14 @@ for i=1:len
     legends{i} = ['N=', num2str(Nlist(i)),' smooth rhs'];
 end
 
-if doR
-for i=1:len
-    generateInput(Nlist(i),0);
-    runMG(Sweeps(1), Sweeps(2), omega);
-    load Output.mat
-    lines = [lines, ResNorms];
-    legends{i+len} = ['N=', num2str(Nlist(i)), ' random rhs'];
+if doRand
+    for i=1:len
+        generateInput(Nlist(i),0);
+        runMG(Sweeps(1), Sweeps(2), omega);
+        load Output.mat
+        lines = [lines, ResNorms];
+        legends{i+len} = ['N=', num2str(Nlist(i)), ' random rhs'];
+    end
 end
 end
 
@@ -140,7 +141,7 @@ if(smooth == 1)
         end
     end
 end
-save Input.mat Seq_f f f_loc -v4
+save Input.mat Seq_f f f_loc -v4 -double
 end
 
 
