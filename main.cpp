@@ -12,6 +12,7 @@
 #include "DTMesh2D.h"
 #include "DTFunction2D.h"
 #include "DTSeriesMesh2D.h"
+#include "DTTimer.h"
 #include "DTDoubleArrayOperators.h"
 #include <math.h>
 #include <Eigen/Sparse>
@@ -23,6 +24,20 @@ namespace po = boost::program_options;
 
 typedef Eigen::SparseMatrix<double> SpMat; // declares a column-major sparse matrix type of double
 typedef Eigen::Triplet<double> T;
+
+
+typedef struct grid
+{
+    DTMutableMesh2D f;  // rhs
+    DTMutableMesh2D v;  // solution
+}gridtype;
+
+typedef struct OutputWrapper
+{
+    DTDoubleArray ResidualNorms;
+    DTDoubleArray Times;
+    OutputWrapper(DTDoubleArray _res, DTDoubleArray _times) : ResidualNorms(_res), Times(_times) {}
+}MGOutputs;
 
 
 double boundary_func(double x, double y)
@@ -128,24 +143,11 @@ void printMatrix(const DTDoubleArray &p)
     printf("\n");
 }
 
-double calcError(const DTDoubleArray ref, const DTDoubleArray tar)
-{
-    DTMutableDoubleArray diff = ref - tar;
-    double absmax = std::max(Maximum(diff), - Minimum(diff));
-    return absmax;
-}
 
 double calcNorm(const DTDoubleArray ref)
 {
     return std::max<double>(Maximum(ref), - Minimum(ref));
 }
-
-
-typedef struct grid
-{
-    DTMutableMesh2D f;  // rhs
-    DTMutableMesh2D v;  // solution
-}gridtype;
 
 
 void direct_solve(gridtype &p)
@@ -210,16 +212,6 @@ void coarsen(const DTDoubleArray &fine, DTMutableDoubleArray &coarse) // restric
                     (fine(i*2-1, j*2-1) + fine(i*2+1, j*2-1) + fine(i*2+1, j*2-1) + fine(i*2+1, j*2+1)) * cornerw;
         }
     }
-//    for(int j = 0; j < N; j++)
-//    {
-//        coarse(0, j) = fine(0, j*2);
-//        coarse(M-1, j) = fine((M-1)*2, j*2);
-//    }
-//    for(int i = 0; i < M; i++)
-//    {
-//        coarse(i, 0) = fine(i*2, 0);
-//        coarse(i, (N-1)) = fine(i*2, (N-1)*2);
-//    }
 }
 
 void refine(const DTDoubleArray &coarse, DTMutableDoubleArray &fine)  // interpolate
@@ -278,15 +270,15 @@ DTMutableDoubleArray residual(const gridtype &p)
     return res;
 }
 
-// @TODO: do one part with pointer isntead of indices
-DTMutableDoubleArray MultiGrid(gridtype &prob, int Nv, int Ndown, int Nup, double omega, int coarsest, bool pureJacobi = false)
+// @TODO: do one part with pointer instead of indices
+MGOutputs MultiGrid(gridtype &prob, int Nv, int Ndown, int Nup, double omega, int coarsest, bool pureJacobi = false)
 {
     // Initialization
     int depth = int(log2(1.0f * (prob.f.DoubleData().m() - 1) / coarsest) + 0.5f);
     gridtype* Grids = new gridtype[depth + 1];
     Grids[0] = prob;
 
-    // Allocate space just once
+    // Allocate memory just once
     for(int d = 1; d <= depth; d++)
     {
         int newdim = (Grids[d-1].f.DoubleData().m() - 1) / 2 + 1;
@@ -298,13 +290,18 @@ DTMutableDoubleArray MultiGrid(gridtype &prob, int Nv, int Ndown, int Nup, doubl
         Grids[d].v = DTMutableMesh2D(grid, dData.Copy());
     }
 
+
     // Do Nv V cycles
+    DTTimer timer;
     DTMutableDoubleArray resnorm(Nv+1);
+    DTMutableDoubleArray times(Nv+1);
     resnorm(0) = calcNorm(residual(Grids[0]));
+    times(0) = 0;
     for(int iter = 0; iter < Nv; iter++)
     {
-        auto before = calcNorm(residual(Grids[0]));
+        double before = calcNorm(residual(Grids[0]));
         double lowest = -1;
+        timer.Start();  // counts time for one V cycle
         if (!pureJacobi)
         {
             // Sweep down
@@ -337,12 +334,13 @@ DTMutableDoubleArray MultiGrid(gridtype &prob, int Nv, int Ndown, int Nup, doubl
         }else{
             relax(Grids[0], 1, omega);
         }
+        times(iter+1) = times(iter) + timer.Stop();
         auto after = calcNorm(residual(Grids[0]));
 //        printf("iteration %d: before=%.20f\tafter=%.20f\tlowest=%.9f\n", iter+1, before, after, lowest);
         resnorm(iter+1) = after;
     }
     delete[] Grids;
-    return resnorm;
+    return MGOutputs(resnorm, times);
 }
 
 
@@ -431,7 +429,7 @@ int main(int argc,const char *argv[])
     gridtype problem;
     problem.f = DTMutableMesh2D(grid, fData.Copy());
     problem.v = DTMutableMesh2D(grid, u.Copy());
-    auto resnorm = MultiGrid(problem, Nv, Ndown, Nup, omega, coarsest, 0);
+    auto output = MultiGrid(problem, Nv, Ndown, Nup, omega, coarsest, 0);
 
 //    auto mgres = calcNorm(residual(problem));
 //    problem.v = DTMutableMesh2D(grid, groundtruth.Copy());
@@ -440,7 +438,8 @@ int main(int argc,const char *argv[])
 
     DTMatlabDataFile outputFile("Output.mat",DTFile::NewReadWrite);
     outputFile.Save(problem.v.DoubleData(), "Sol");
-    outputFile.Save(resnorm, "ResNorms");
+    outputFile.Save(output.ResidualNorms, "ResNorms");
+    outputFile.Save(output.Times, "Times");
 //    outputFile.Save(groundtruth, "Groundtruth");
 
     return 0;

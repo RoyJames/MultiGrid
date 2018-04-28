@@ -4,11 +4,13 @@ close all
 % default parameters
 N = 129;
 omega = 0.7;
-Sweep = [7,7];
+Sweep = [3,3];
+Nv = 50;
 
 % Convergence for a V cycle
-Nlist = [33,65,129];
-[ cycleline, lgds ] = MGVCycle(Nlist,Sweep,omega);
+% Nlist = [33,65,129];
+Nlist = [2^15+1];
+[ cycleline, lgds ] = MGVCycle(Nlist,Sweep,omega,0);
 figure
 semilogy(cycleline);
 legend(lgds);
@@ -17,34 +19,58 @@ xlabel('# V cycle')
 ylabel('Inf norm of residuals')
 grid on
 
-% Vary the relaxation parameter
-omegas = [0.1,0.3,0.5,0.7,0.9];
-[ cycleline, lgds ] = MGRelaxation(N,Sweep,omegas);
-figure
-semilogy(cycleline);
-legend(lgds);
-title('Vary the relaxation parameter');
-xlabel('# V cycle')
-ylabel('Inf norm of residuals')
-grid on
+% % Vary the relaxation parameter
+% omegas = [0.1,0.3,0.5,0.7,0.9];
+% [ cycleline, lgds ] = MGRelaxation(N,Sweep,omegas);
+% figure
+% semilogy(cycleline);
+% legend(lgds);
+% title('Vary the relaxation parameter');
+% xlabel('# V cycle')
+% ylabel('Inf norm of residuals')
+% grid on
+% 
+% % Vary the sweep count
+% Sweeps = [1,2;2,1;3,3;5,5;7,7];
+% [ cycleline, lgds, timeline ] = MGSpeed(N,Sweeps,omega);
+% corrected_x = repmat([1:Nv+1]',1,size(Sweeps,1)).*sum(Sweeps,2)';
+% figure
+% semilogy(corrected_x, cycleline);
+% legend(lgds);
+% title('Vary the sweep count');
+% xlabel('# corrected iterations')
+% ylabel('Inf norm of residuals')
+% grid on
+% 
+% figure
+% semilogy(timeline, cycleline);
+% legend(lgds);
+% title('Vary the sweep count');
+% xlabel('Time in seconds')
+% ylabel('Inf norm of residuals')
+% grid on
 
-% Vary the sweep count
-Sweeps = [1,2;2,1;3,3;5,5;7,7];
-[ cycleline, lgds ] = MGSpeed(N,Sweeps,omega);
-figure
-semilogy(cycleline);
-legend(lgds);
-title('Vary the sweep count');
-xlabel('# V cycle')
-ylabel('Inf norm of residuals')
-grid on
+% Go for broke
+% Nbig = 2^15+1;
+% [ cycleline ] = GOBroke(Nbig,Sweep,omega);
+% figure
+% semilogy(cycleline);
+% title('Go for broke!');
+% xlabel('# V cycle')
+% ylabel('Inf norm of residuals')
+% grid on
 
 end
 
-function [ lines, legends ] = MGVCycle(Nlist, Sweeps, omega)
+function [ lines, legends ] = MGVCycle(Nlist, Sweeps, omega, doRand)
 len = length(Nlist);
 lines = [];
-legends = cell(1,len*2);
+if doRand
+    legends = cell(1,len*2);
+else
+    legends = cell(1,len);
+end
+
 for i=1:len
     generateInput(Nlist(i),1);
     runMG(Sweeps(1), Sweeps(2), omega);
@@ -53,12 +79,14 @@ for i=1:len
     legends{i} = ['N=', num2str(Nlist(i)),' smooth rhs'];
 end
 
-for i=1:len
-    generateInput(Nlist(i),0);
-    runMG(Sweeps(1), Sweeps(2), omega);
-    load Output.mat
-    lines = [lines, ResNorms];
-    legends{i+len} = ['N=', num2str(Nlist(i)), ' random rhs'];
+if doRand
+    for i=1:len
+        generateInput(Nlist(i),0);
+        runMG(Sweeps(1), Sweeps(2), omega);
+        load Output.mat
+        lines = [lines, ResNorms];
+        legends{i+len} = ['N=', num2str(Nlist(i)), ' random rhs'];
+    end
 end
 end
 
@@ -75,20 +103,29 @@ for i=1:len
 end
 end
 
-function [ lines, legends ] = MGSpeed(N,Sweeps,omega)
+function [ lines, legends, timeline ] = MGSpeed(N,Sweeps,omega)
 % TODO: should create two graphs, one where the x axis is scaled by the number of sweeps at the top level, and another with wall time
 len = size(Sweeps, 1);
 lines = [];
+timeline = [];
 legends = cell(1,len);
 for i=1:len
     generateInput(N,1);
     runMG(Sweeps(i,1), Sweeps(i,2), omega);
     load Output.mat
     lines = [lines, ResNorms];
+    timeline = [timeline, Times];
     legends{i} = ['N_a=', num2str(Sweeps(i,1)), ' N_b=', num2str(Sweeps(i,2))];
 end
 end
 
+% function [ line ] = GOBroke(N, Sweeps, omega)
+% generateInput(N,1);
+% runMG(Sweeps(1), Sweeps(2), omega);
+% load Output.mat
+% line = ResNorms;
+% % legends{i} = ['\omega=', num2str(omega(i))];
+% end
 
 function [ f ] = generateInput( N, smooth )
 load('InputStd.mat')
