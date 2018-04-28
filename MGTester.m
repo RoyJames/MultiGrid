@@ -2,35 +2,35 @@ function [out] = MGTester()
 close all
 
 % default parameters
-N = 129;
+N = 513;
 omega = 0.7;
 Sweep = [3,3];
 Nv = 50;
 
 % Convergence for a V cycle
-Nlist = [33,65,129];
-% Nlist = [2^13+1];
-[ cycleline, lgds ] = MGVCycle(Nlist,Sweep,omega,1);
-figure
-semilogy(cycleline);
-legend(lgds);
-title('Convergence for a V cycle');
-xlabel('# V cycle')
-ylabel('Inf norm of residuals')
-grid on
+% Nlist = [129, 257, 513];
+% % Nlist = [2^13+1];
+% [ cycleline, lgds ] = MGVCycle(Nlist,Sweep,omega,1);
+% figure
+% semilogy(cycleline);
+% legend(lgds);
+% title('Convergence for a V cycle');
+% xlabel('# V cycle')
+% ylabel('Inf norm of residuals')
+% grid on
 
-% Vary the relaxation parameter
-omegas = [0.1,0.3,0.5,0.7,0.9];
-[ cycleline, lgds ] = MGRelaxation(N,Sweep,omegas);
-figure
-semilogy(cycleline);
-legend(lgds);
-title('Vary the relaxation parameter');
-xlabel('# V cycle')
-ylabel('Inf norm of residuals')
-grid on
-
-% Vary the sweep count
+% % Vary the relaxation parameter
+% omegas = [0.7,0.75,0.8,0.85,0.9];
+% [ cycleline, lgds ] = MGRelaxation(N,Sweep,omegas);
+% figure
+% semilogy(cycleline);
+% legend(lgds);
+% title('Vary the relaxation parameter');
+% xlabel('# V cycle')
+% ylabel('Inf norm of residuals')
+% grid on
+% 
+% % Vary the sweep count
 Sweeps = [1,2;2,1;3,3;5,5;7,7];
 [ cycleline, lgds, timeline ] = MGSpeed(N,Sweeps,omega);
 corrected_x = repmat([1:Nv+1]',1,size(Sweeps,1)).*sum(Sweeps,2)';

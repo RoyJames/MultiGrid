@@ -180,6 +180,7 @@ void relax(gridtype &p, int Niter, double omega)  // Jacobi iteration
     double h2 = p.v.Grid().dx() * p.v.Grid().dx();
     DTMutableDoubleArray u_old;
     double factor = 0.25;
+    auto ptr_new = u.Pointer();
     for(int iter = 0; iter < Niter; iter++)
     {
         u_old = u.Copy();
@@ -190,7 +191,7 @@ void relax(gridtype &p, int Niter, double omega)  // Jacobi iteration
             {
 //                u(i + j*M) = u_old(i + j*M) * nomega +
 //                        ((u_old(i-1 + j*M)+u_old(i+1 + j*M)+u_old(i + (j-1)*M)+u_old(i + (j+1)*M)-fData(i + j*M)*h2) * factor) * omega;
-                u(i + j*M) = *(ptr + i + j*M) * nomega +
+                *(ptr_new + i + j*M) = *(ptr + i + j*M) * nomega +
                              ((*(ptr + i-1 + j*M) + *(ptr + i+1 + j*M) + *(ptr + i + (j-1)*M) + *(ptr + i + (j+1)*M) - fData(i + j*M)*h2) * factor) * omega;
             }
         }
@@ -266,12 +267,14 @@ DTMutableDoubleArray residual(const gridtype &p)
     res = 0;
     double invh2 = 1.0 / h2;
     auto ptr = u.Pointer();
+    auto ptr_res = res.Pointer();
+    auto ptr_f = fData.Pointer();
     for(int j = 1; j < N-1; j++)
     {
         for(int i = 1; i < M-1; i++)
         {
 //            res(i, j) = fData(i, j) - ( u(i-1, j) + u(i+1, j) + u(i, j-1) + u(i, j+1) - u(i, j) * 4.0) * invh2;
-            res(i + j*M) = fData(i + j*M) - ( *(ptr + i-1 + j*M) + *(ptr + i+1 + j*M) + *(ptr + i + (j-1)*M) + *(ptr + i + (j+1)*M) - *(ptr + i + j*M) * 4.0) * invh2;
+            *(ptr_res + i + j*M) = *(ptr_f + i + j*M) - ( *(ptr + i-1 + j*M) + *(ptr + i+1 + j*M) + *(ptr + i + (j-1)*M) + *(ptr + i + (j+1)*M) - *(ptr + i + j*M) * 4.0) * invh2;
         }
     }
     return res;
@@ -307,14 +310,16 @@ MGOutputs MultiGrid(gridtype &prob, int Nv, int Ndown, int Nup, double omega, in
     {
         double before = calcNorm(residual(Grids[0]));
         double lowest = -1;
-        timer.Start();  // counts time for one V cycle
+        double time_singleV = 0;
         if (!pureJacobi)
         {
             // Sweep down
             for(int iDown = 0; iDown < depth; iDown++)
             {
 //                auto before_refine = calcNorm(residual(Grids[iDown]));
+                timer.Start();
                 relax(Grids[iDown], Ndown, omega);  // Jacobi iterations before refinement
+                time_singleV += timer.Stop();
 //                auto after_refine = calcNorm(residual(Grids[iDown]));
 //                printf("level %d:%.20f -> %.20f\n", iDown, before_refine,after_refine);
                 auto res = residual(Grids[iDown]);
@@ -334,13 +339,15 @@ MGOutputs MultiGrid(gridtype &prob, int Nv, int Ndown, int Nup, double omega, in
                 auto refined = DTMutableDoubleArray(cur.m(), cur.n());
                 refine(prev, refined);
                 cur += refined;
+                timer.Start();
                 relax(Grids[iUp], Nup, omega);  // Jacobi iterations after refinement
+                time_singleV += timer.Stop();
                 prev = 0;   // clear previous solution
             }
         }else{
             relax(Grids[0], 1, omega);
         }
-        times(iter+1) = times(iter) + timer.Stop();
+        times(iter+1) = times(iter) + time_singleV;
         auto after = calcNorm(residual(Grids[0]));
 //        printf("iteration %d: before=%.20f\tafter=%.20f\tlowest=%.9f\n", iter+1, before, after, lowest);
         resnorm(iter+1) = after;
@@ -359,7 +366,7 @@ int main(int argc,const char *argv[])
             ( "Nv,v", po::value< int >()->default_value( 100 ), "number of V cycles to sweep")
             ( "Nbefore,b", po::value< int >()->default_value( 3 ), "number of Jacobi sweeps before refinement" )
             ( "Nafter,a", po::value< int >()->default_value( 3 ), "number of Jacobi sweeps after refinement" )
-            ( "omega,o", po::value< double >()->default_value( 1.8 ), "relaxation parameter" )
+            ( "omega,o", po::value< double >()->default_value( 0.6 ), "relaxation parameter" )
             ( "coarsest,c", po::value< int >()->default_value( 2 ), "threshold dimension to use a direct solver" );
 
 
